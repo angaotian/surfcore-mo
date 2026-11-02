@@ -647,37 +647,36 @@ QQ 群「鱼群保护」纯函数层：只做判定，不碰网络/状态；冷�
 - 重定向到内网在下一跳校验时被拒（`src/safe-fetch.js:338-340`）。
 - 文本截断按码点，不切坏 emoji（`src/safe-fetch.js:250-258`）。
 
-### 5.2 `web-search.js`（496 行）
+### 5.2 `web-search.js`（797 行）
 
 **职责**
-MCP `web_search` 的实现：优先 DSH 同源的 DeepSeek 联网搜索（同一端点/模型/服务端 `web_search_20250305` 工具），失败回退 Bing（RSS 优先，HTML 兜底）（`src/web-search.js:1-23`）。安全边界：API key 只发往校验过的 HTTPS 公网端点；不跟随重定向；key 不写日志/不进错误/不进结果（`src/web-search.js:18-23`）。
+MCP `web_search` 的实现，三家后端一条链：**Anysearch（实时检索，JSON-RPC，第三方）→ DeepSeek 同源联网搜索（服务端 `web_search_20250305` 工具）→ Bing（RSS 优先，HTML 兜底）**（`src/web-search.js:1-30`）。安全边界：搜索端点必须 https + 解析到公网；不跟随重定向；API key 只发往校验过的端点、不进日志/错误/结果；Anysearch 的工具表**只借一条数据通道**，不把上游的「MANDATORY 提交打分」等描述暴露给模型，也不代提交 `score`（`src/web-search.js:583-592`）。
 
 **对外接口**
-`loadSearchConfig(root)`（`src/web-search.js:62-82`）、`resolveDshHome()`（`src/web-search.js:85-87`）、`readDshCredential(ref)`（`src/web-search.js:93-103`）、`resolveSearchApiKey(config)`（`src/web-search.js:106-115`）、`mapDeepSeekResponse(response,maxResults)`（`src/web-search.js:134-170`）、`deepseekSearch(query,config)`（`src/web-search.js:289-342`）、`parseBingRss(xml,maxResults)`（`src/web-search.js:372-386`）、`parseBingHtml(html,maxResults)`（`src/web-search.js:389-407`）、`bingSearch(query,config)`（`src/web-search.js:410-433`）、`clearSearchCache()`（`src/web-search.js:437-439`）、`webSearch(query,options)`（`src/web-search.js:445-496`）。
+`normalizeFreshness(value)`（`src/web-search.js:91`）、`normalizeContentTypes(value)`（`src/web-search.js:102`）、`loadSearchConfig(root)`（`src/web-search.js:117`）、`resolveDshHome()`（`src/web-search.js:155`）、`readDshCredential(ref)`（`src/web-search.js:163`）、`resolveSearchApiKey(config)`（`src/web-search.js:176`）、`resolveAnysearchApiKey(config)`（`src/web-search.js:192`）、`normalizeSearchUrl`（私有，`src/web-search.js:204`）、`mapDeepSeekResponse`（`src/web-search.js:221`）、`deepseekSearch`（`src/web-search.js:376`）、`parseBingRss`（`src/web-search.js:459`）、`parseBingHtml`（`src/web-search.js:476`）、`bingSearch`（`src/web-search.js:497`）、`parseAnysearchMarkdown`（`src/web-search.js:553`）、`anysearchSearch`（`src/web-search.js:603`）、`clearSearchCache`（`src/web-search.js:694`）、`webSearch`（`src/web-search.js:721`）。
 
 **数据结构**
-默认配置 `{provider:'auto',apiKey:'',apiKeyEnv:'DEEPSEEK_API_KEY',model:'deepseek-v4-flash',maxUses:5,maxTokens:4096,maxResults:8,timeoutMs:35000}`（`src/web-search.js:43-53`）。结果条目 `{title,url,snippet?,publishedAt?}`；统一返回 `{query,provider,results,fallbackFrom?,note?}`（`src/web-search.js:160-165`、`src/web-search.js:441-443`）。
+默认配置 `{provider:'auto',apiKey:'',apiKeyEnv:'DEEPSEEK_API_KEY',model:'deepseek-v4-flash',maxUses:5,maxTokens:4096,maxResults:8,timeoutMs:35000,anysearch:{enabled:true,endpoint:'https://api.anysearch.com/mcp',apiKey:'',apiKeyEnv:'ANYSEARCH_API_KEY',timeoutMs:20000,freshness:'',contentTypes:[]}}`（`src/web-search.js:42-82`）。结果条目 `{title,url,snippet?,publishedAt?}`；统一返回 `{query,provider:'anysearch'|'deepseek'|'bing',results,fallbackFrom?,note?}`（`src/web-search.js:706-712`、`src/web-search.js:763-780`）。
 
 **规则与算法**
-- **Key 顺序**：`config.apiKey` → 环境变量（名可配）→ DSH `.credentials.yaml` 的 `refs.<ref>`；返回 `{key,source}`，key 只在此出现（`src/web-search.js:106-115`）。
-- **端点校验**：必须 `https:`；无内嵌凭据；`resolveSafeAddresses` 校验公网（`src/web-search.js:173-184`）。
-- **POST**：直接连已校验地址，SNI/Host 用域名；拒绝 3xx；响应体最大 2MB；总超时；网络层失败最多换 2 个地址（`src/web-search.js:191-286`、`src/web-search.js:227-231`）。
-- **请求体**：`model` + `max_tokens` + 一条 user 消息「Perform a web search for the query: ...」+ `tools:[{type:'web_search_20250305',name:'web_search',max_uses}]`；头带 `x-api-key`、`authorization: Bearer`、`anthropic-version`（`src/web-search.js:296-320`）。
-- **响应映射**：只认 `web_search_tool_result`，没有就抛 `NO_RESULT_BLOCK`；文本块 `citations` 按 URL 聚合成 snippet；去重、标题 200 字、snippet 500 字、可带 `page_age`（`src/web-search.js:133-170`）。
-- **Bing**：RSS 带 `format=rss&count&setlang=zh-hans&cc=CN`；RSS 失败/空再抓 HTML；都走 `safeFetch`；实体解码、去标签、去重、限量（`src/web-search.js:344-433`）。
-- **缓存**：key `provider|query|maxResults`，TTL 5 分钟，最多 64 条（`src/web-search.js:435`、`src/web-search.js:450-452`、`src/web-search.js:491-494`）。
-- **空结果说明**：0 条时加 note「没有搜到结果（可换个说法/加限定词；仍为空就不要再重复搜索）」，必须在 `cache.set` 之前拼好，否则缓存里是没有 note 的旧对象（`src/web-search.js:483-491`）。
-- **回退说明**：DeepSeek 失败但 Bing 成功返回 `fallbackFrom:'deepseek'` 与 note；两边都失败时带出两边原因（`src/web-search.js:469-481`）。
+- **Anysearch 协议**：一次 POST 到 `webSearch.anysearch.endpoint`，body `{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'search',arguments:{query(≤200),max_results,freshness?,content_types?}}}`；UA 固定 `qq-bridge-web-search/0.3.0`；只有配了 key 才加 `authorization: Bearer`（**匿名可用，`source:'anonymous'` 不算失败**）（`src/web-search.js:603-640`、`src/web-search.js:192-202`）。
+- **Anysearch 结果解析**：上游返回 Markdown（`## Search Results (N, Xms)` → `### 1. 标题` → `- **URL**: …` → **整页正文数千字** + 尾部 ```yaml request_id```）。解析时按 `### ` 切块、丢抬头、标题去排名序号、URL 取 `**URL**` 行并按 URL 去重、正文清掉 `- ` 列表符 / 行内 `# 标题 #` / 开头重复的标题，**snippet 固定截 400 字**（不截就会一次搜索吃掉大半上下文）（`src/web-search.js:553-583`、`src/web-search.js:52`）。
+- **Key 顺序**（DeepSeek 与 Anysearch 各自独立）：`config.apiKey` → 环境变量（名可配）→ DSH `.credentials.yaml` 的 `refs.<ref>`；DeepSeek 没有 key 抛 `NO_KEY`，Anysearch 没有 key 走匿名（`src/web-search.js:176-202`）。
+- **端点校验**：必须 `https:`；无内嵌凭据；`resolveSafeAddresses` 校验公网（`src/web-search.js:260-271`）。Anysearch 的校验失败包成 `BAD_ENDPOINT`，**在发请求之前**就停下。
+- **POST**：直接连已校验地址，SNI/Host 用域名；拒绝 3xx；响应体最大 2MB；总超时；网络层失败最多换 2 个地址（`src/web-search.js:278-374`）。
+- **缓存**：key `provider|query|maxResults|freshness|contentTypes`，TTL 5 分钟，最多 64 条（`src/web-search.js:692`、`src/web-search.js:729-731`、`src/web-search.js:786-790`）。
+- **空结果说明**：0 条时加 note「没有搜到结果（可换个说法/加限定词；仍为空就不要再重复搜索）」，必须在 `cache.set` 之前拼好，否则缓存里是没有 note 的旧对象（`src/web-search.js:779-785`）。
+- **回退说明**：`auto` 顺序 `anysearch → deepseek → bing`（`anysearch.enabled===false` 时摘掉第一跳）；**报错换下一路，空结果也换**（但保留第一个空结果）；任一路失败而后面成功时带 `fallbackFrom` + note「…，已回退 X」；三家全失败抛 `ALL_FAILED`，文案里带每一路的原因与 hint（`src/web-search.js:733-777`）。
 
 **谁调用**
-`src/mcp-web-search-safe.js:64` 调 `webSearch(clean,{root})`；`web_fetch` 用 `safeFetch`（`src/mcp-web-search-safe.js:81`）。
+`src/mcp-web-search-safe.js:58-83` 调 `webSearch(clean,{root,maxResults,freshness,contentTypes})`（三个可选参数按次覆盖配置）；`web_fetch` 用 `safeFetch`（`src/mcp-web-search-safe.js:85-100`）。
 
 **边界与失败模式**
-- 没有 key 抛 `NO_KEY`；`auto` 回退 Bing；`provider='deepseek'` 不自动回退（`src/web-search.js:290-293`、`src/web-search.js:464-467`）。
-- HTTP 非 2xx 只回显状态与响应体短错误，绝不拼请求头（`src/web-search.js:322-334`）。
-- 响应不是 JSON / 缺结果块有稳定 code（`BAD_BODY`/`NO_RESULT_BLOCK`）（`src/web-search.js:335-341`、`src/web-search.js:136-139`）。
-- Bing 也失败时抛合并错误，而不是只报 Bing（`src/web-search.js:475-479`）。
-- 查询词清洗在 MCP 层（去 CQ 码/控制字符/120 字截断），本模块只 trim 与空检查（`src/mcp-web-search-safe.js:52-59`、`src/web-search.js:446-447`）。
+- 显式 `provider='deepseek'` 没有 key → `NO_KEY`，**不悄悄回退**（旧行为被测试钉着）；显式 pin 任何一家都不回退（`src/web-search.js:744-746`）。
+- Anysearch 的失败都有稳定 code + 可操作 hint：`BAD_ENDPOINT` / `NETWORK_ERROR` / `HTTP_ERROR`(+`status`) / `BAD_BODY` / `RPC_ERROR` / `UPSTREAM_ERROR`（额度或内容限制，auto 会自动回退）（`src/web-search.js:589-600`、`src/web-search.js:641-691`）。
+- HTTP 非 2xx 只回显状态与响应体短错误，绝不拼请求头（可能带 key）（`src/web-search.js:655-663`）。
+- 上游 `result.isError` 属于**可回退**的失败，不当成成功结果（`src/web-search.js:684-690`）。
+- 查询词清洗在 MCP 层（去 CQ 码/控制字符/120 字截断），本模块只 trim 与空检查（`src/mcp-web-search-safe.js:42-50`、`src/web-search.js:722-723`）。
 
 ---
 

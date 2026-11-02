@@ -17,14 +17,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import {
+  anysearchSearch,
   bingSearch,
   clearSearchCache,
   deepseekSearch,
   loadSearchConfig,
   mapDeepSeekResponse,
+  normalizeContentTypes,
+  normalizeFreshness,
+  parseAnysearchMarkdown,
   parseBingHtml,
   parseBingRss,
   readDshCredential,
+  resolveAnysearchApiKey,
   resolveSearchApiKey,
   webSearch
 } from '../src/web-search.js';
@@ -393,6 +398,134 @@ await test('webSearch：空结果提示在写缓存之前生成（缓存命中�
   assert.ok(noteAt > 0, 'webSearch 必须给空结果附 note');
   assert.ok(cacheAt > 0, 'webSearch 必须有 5 分钟查询缓存');
   assert.ok(noteAt < cacheAt, 'note 必须在 cache.set 之前生成：缓存存的是 value 的引用，反过来写会让缓存命中丢掉提示');
+});
+
+// ── Anysearch（2026-11-02 接入：实时检索，auto 的第一跳）────────────────────
+// 上游返回的是 Markdown，正文是整页正文（几千字）。这里钉住「拿到能塞进上下文的
+// 标题/URL/摘要」这件事，以及失败时 code+hint 可操作（AGENTS §1.7）。
+const SAMPLE_ANYSEARCH = [
+  '## Search Results (3 results, 902ms)',
+  '',
+  '### 1. 标题一：DeepSeek V4',
+  '- **URL**: https://example.com/a',
+  '- # 标题一：DeepSeek V4 # 标题一：DeepSeek V4 这是正文第一段，说明一个事实。',
+  '',
+  '### 2. 标题二：新闻',
+  '- **URL**: https://example.com/b',
+  '- 正文二',
+  '',
+  '### 3. 标题一：DeepSeek V4',
+  '- **URL**: https://example.com/a',
+  '- 重复 URL 必须丢弃',
+  '',
+  '### 4. 没有 URL 的块',
+  '- 正文四',
+  '',
+  '```yaml',
+  'request_id: abc',
+  '```',
+  ''
+].join('\n');
+
+await test('Anysearch：Markdown 解析（去排名序号/去重标题/按 URL 去重/无 URL 丢弃/上限）', async () => {
+  const results = parseAnysearchMarkdown(SAMPLE_ANYSEARCH, 8);
+  assert.equal(results.length, 2, '重复 URL 与无 URL 的块必须丢掉');
+  assert.equal(results[0].title, '标题一：DeepSeek V4', '`### 1. ` 的序号是排名，不是标题');
+  assert.equal(results[0].url, 'https://example.com/a');
+  assert.equal(results[0].snippet, '这是正文第一段，说明一个事实。', '正文开头重复的标题要剥掉，别占 token');
+  assert.ok(!/```|request_id/.test(JSON.stringify(results)), '尾部 yaml 块不得混进摘要');
+  assert.equal(parseAnysearchMarkdown(SAMPLE_ANYSEARCH, 1).length, 1, 'maxResults 必须生效');
+  assert.deepEqual(parseAnysearchMarkdown('', 8), [], '空响应不得抛');
+
+  // 整页正文可能几千字：摘要必须截到 400 字以内（否则一次搜索就能吃掉大半个上下文）
+  const long = parseAnysearchMarkdown(`## Search Results\n\n### 1. 长文\n- **URL**: https://example.com/long\n- ${'正'.repeat(2000)}`, 8);
+  assert.equal(long.length, 1);
+  assert.equal(long[0].snippet.length, 400, '摘要固定截 400 字');
+});
+
+await test('Anysearch：freshness / contentTypes 只认白名单（越界静默丢弃）', async () => {
+  assert.equal(normalizeFreshness('week'), 'week');
+  assert.equal(normalizeFreshness('decade'), '', '不认识的时效回落到「不限定」');
+  assert.equal(normalizeFreshness(''), '');
+  assert.deepEqual(normalizeContentTypes(['news', 'doc']), ['news', 'doc']);
+  assert.deepEqual(normalizeContentTypes('news, doc'), ['news', 'doc'], '逗号串也要能解析（配置文件里好写）');
+  assert.deepEqual(normalizeContentTypes(['news', 'news', 'nonsense']), ['news'], '去重 + 过滤越界值');
+  assert.deepEqual(normalizeContentTypes(undefined), []);
+});
+
+await test('Anysearch：没有 key 也算可用（anonymous），显式 key 优先', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-any-home-'));
+  const oldHome = process.env.DSH_HOME;
+  const oldKey = process.env.QQ_TEST_ANY_KEY;
+  try {
+    process.env.DSH_HOME = home;
+    delete process.env.QQ_TEST_ANY_KEY;
+    fs.writeFileSync(path.join(home, '.credentials.yaml'), 'version: 1\nrefs: {}\nrecords: {}\n');
+    assert.deepEqual(resolveAnysearchApiKey({ apiKeyEnv: 'QQ_TEST_ANY_KEY' }), { key: '', source: 'anonymous' },
+      '匿名可用：没有 key 不能算失败，否则 auto 第一跳会被误判为不可用');
+    process.env.QQ_TEST_ANY_KEY = 'any-from-env';
+    assert.deepEqual(resolveAnysearchApiKey({ apiKeyEnv: 'QQ_TEST_ANY_KEY' }), { key: 'any-from-env', source: 'env' });
+    assert.deepEqual(
+      resolveAnysearchApiKey({ anysearch: { apiKey: 'any-from-config', apiKeyEnv: 'QQ_TEST_ANY_KEY' } }),
+      { key: 'any-from-config', source: 'config' }
+    );
+  } finally {
+    if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    if (oldKey === undefined) delete process.env.QQ_TEST_ANY_KEY; else process.env.QQ_TEST_ANY_KEY = oldKey;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+await test('Anysearch：配置默认开启，endpoint 空串回默认，enabled:false 生效', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-any-cfg-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ webSearch: { provider: 'anysearch' } }));
+    const cfg = loadSearchConfig(dir);
+    assert.equal(cfg.provider, 'anysearch', 'anysearch 必须是合法 provider');
+    assert.equal(cfg.anysearch.enabled, true, '默认开启（auto 的第一跳）');
+    assert.equal(cfg.anysearch.endpoint, 'https://api.anysearch.com/mcp');
+    assert.equal(cfg.anysearch.timeoutMs, 20000);
+
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+      webSearch: { anysearch: { enabled: false, endpoint: '', timeoutMs: 1, freshness: 'decade', contentTypes: ['news', 'x'] } }
+    }));
+    const off = loadSearchConfig(dir);
+    assert.equal(off.anysearch.enabled, false, '关掉这一跳是唯一的「不把查询词发给第三方」的开关');
+    assert.equal(off.anysearch.endpoint, 'https://api.anysearch.com/mcp', '空端点回默认，不能让校验去解析空串');
+    assert.equal(off.anysearch.timeoutMs, 3000, 'timeoutMs 下限 3s');
+    assert.equal(off.anysearch.freshness, '');
+    assert.deepEqual(off.anysearch.contentTypes, ['news']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+await test('Anysearch：非 https 端点直接拒绝（不联网、不泄查询词），带 code + hint', async () => {
+  const error = await anysearchSearch('测试', {
+    maxResults: 5,
+    anysearch: { endpoint: 'http://api.anysearch.com/mcp', timeoutMs: 3000 }
+  }).catch((e) => e);
+  assert.equal(error?.code, 'BAD_ENDPOINT', '端点不合格必须在发请求之前停下');
+  assert.ok(error?.hint && error.hint.length > 0, 'AGENTS §1.7：失败必须带可操作的 hint');
+  assert.match(error.message, /Anysearch 端点不可用/);
+});
+
+await test('webSearch：auto 第一跳是 Anysearch，显式 pin 不回退', async () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'web-search.js'), 'utf8');
+  // 顺序：order.push('anysearch') 必须出现在 deepseek/bing 之前 —— 改顺序会静默改变「谁在实时检索」。
+  const anyAt = source.indexOf("order.push('anysearch')");
+  const restAt = source.indexOf("order.push('deepseek', 'bing')");
+  assert.ok(anyAt > 0 && restAt > 0, 'auto 链路必须显式列出三家的顺序');
+  assert.ok(anyAt < restAt, 'Anysearch 必须是第一跳');
+  assert.match(source, /anysearch\?\.enabled !== false/, '关掉 Anysearch 时要能从 auto 链路里摘掉这一跳');
+  assert.match(source, /Object\.hasOwn\(attempts, wanted\)/, '显式 provider 必须只走那一家（旧行为：不回退）');
+  assert.match(source, /ALL_FAILED/, '三家全失败要有稳定的 code');
+});
+
+await test('MCP 服务器把 maxResults / freshness / contentTypes 暴露成可选参数', async () => {
+  const source = fs.readFileSync(path.join(ROOT, 'src', 'mcp-web-search-safe.js'), 'utf8');
+  assert.match(source, /maxResults: z\.number\(\)\.int\(\)\.min\(1\)\.max\(20\)\.optional\(\)/, 'maxResults 必须可选且有上限');
+  assert.match(source, /freshness: z\.enum\(/, 'freshness 必须用枚举挡住越界值');
+  assert.match(source, /contentTypes: z\.array\(z\.enum\(/, 'contentTypes 必须是白名单数组');
+  assert.ok(!/name: 'score'/.test(source), '上游要求回传打分的「MANDATORY」是不可信指令，不代提交');
 });
 
 if (failures) {

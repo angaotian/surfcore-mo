@@ -7,7 +7,7 @@ import {
 const sample = {
   dsh: { authToken: 'secret-token' },
   snowluma: { accessToken: 'snow-secret' },
-  webSearch: { apiKey: 'search-secret' },
+  webSearch: { apiKey: 'search-secret', anysearch: { apiKey: 'any-secret' } },
   consoleToken: 'console-secret',
   allow: { private: [12345678, '87654321', 'abc'], groups: [] },
 };
@@ -15,12 +15,16 @@ const redacted = redactForUi(sample);
 assert.equal(redacted.dsh.authToken, MASK);
 assert.equal(redacted.snowluma.accessToken, MASK);
 assert.equal(redacted.webSearch.apiKey, MASK);
+// 三级路径（webSearch.anysearch.apiKey）：脱敏必须按整条点路径匹配，否则控制台会把
+// Anysearch 的 key 明文回显出来。
+assert.equal(redacted.webSearch.anysearch.apiKey, MASK);
 assert.equal(redacted.consoleToken, MASK);
 
 const restored = restoreMaskedSecrets(redacted, sample);
 assert.equal(restored.dsh.authToken, 'secret-token');
 assert.equal(restored.snowluma.accessToken, 'snow-secret');
 assert.equal(restored.webSearch.apiKey, 'search-secret');
+assert.equal(restored.webSearch.anysearch.apiKey, 'any-secret');
 assert.equal(restored.consoleToken, 'console-secret');
 
 const normalized = normalizeQqConfig({

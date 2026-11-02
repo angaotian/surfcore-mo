@@ -1,19 +1,29 @@
-// 联网搜索（MCP `web_search` 的实现）。
+// 联网搜索（MCP `web_search` 的实现）。三家后端，统一返回 `{title,url,snippet?,publishedAt?}`：
 //
-// 设计目标：**优先复用 DSH 原本的联网搜索能力**，而不是自己抓 Bing 的搜索结果页。
+//   1. **Anysearch**（`https://api.anysearch.com/mcp`，JSON-RPC，2026-11-02 接入）：
+//      实时网页检索，匿名可用（有 key 走 key）、单次约 1s、不消耗模型 token。
+//      代价：搜索词会发给这家第三方（README 明说）；返回的是**整页正文**，
+//      本模块只取前 400 字当 snippet，否则一条结果就能吃掉几千 token。
+//      上游工具描述里写着「MANDATORY: call score ...」，那是**服务端的自述**，
+//      不是我们的指令：本模块不代任何一方提交打分/反馈（绝不把群里的问题回传）。
+//   2. **DeepSeek**（与 DSH 同源的 `web_search_20250305` 服务端工具）：搜索词只发给
+//      本来就在处理这段对话的同一家；要消耗模型 token，没有 key 就用不了。
+//   3. **Bing**（`cn.bing.com` 的 RSS，失败退回 HTML）：不依赖任何 key 的最后兜底。
 //
-// DSH 的 `web_search` 工具背后是 `@deepseek-ai/dsh-web-search-deepseek`：
-// 向 DeepSeek 的 Anthropic 兼容 Messages 端点发一次带 `web_search_20250305`
-// 服务端工具的请求，从 `web_search_tool_result` 里取结构化结果。本模块照同一
-// 端点/模型/工具参数实现一份最小客户端，于是 QQ 里的 AI 和 DSH 里的 AI 拿到的是
-// **同一路搜索结果**；搜索词只发给 DeepSeek（也就是本来就在处理这段对话的同一家），
-// 不再把群聊里提炼出来的词发给 Bing。
+// `provider: "auto"` 的顺序是 **Anysearch → DeepSeek → Bing**（见 webSearch()）：
+// 前一路报错或返回空结果才继续往后走，全部为空才返回空结果 + note。
 //
-// 凭据解析顺序与 DSH 一致：
-//   1. config.json 的 `webSearch.apiKey`（不推荐，明文）
-//   2. 环境变量 `DEEPSEEK_API_KEY`（可用 `webSearch.apiKeyEnv` 改）
+// DeepSeek 这一路的实现参照 `@deepseek-ai/dsh-web-search-deepseek`：向 Anthropic 兼容
+// Messages 端点发一次带 `web_search_20250305` 服务端工具的请求，从
+// `web_search_tool_result` 里取结构化结果，于是 QQ 里的 AI 和 DSH 里的 AI 拿到的是
+// **同一路搜索结果**。
+//
+// 凭据解析顺序（DeepSeek 与 Anysearch 各自独立，都是这条顺序）：
+//   1. config.json 的 `webSearch.apiKey` / `webSearch.anysearch.apiKey`（不推荐，明文）
+//   2. 环境变量 `DEEPSEEK_API_KEY` / `ANYSEARCH_API_KEY`（可用对应的 `apiKeyEnv` 改）
 //   3. DSH 的 `$DSH_HOME/.credentials.yaml` → `refs.<ref>`（DSH 的 Models 页写入的 key）
-// 都没有时：回退 Bing（`cn.bing.com` 的 RSS，失败再退回 HTML），保证"永远有一个能用的搜索"。
+// 都没有时：Anysearch 匿名仍可用；DeepSeek 报 `NO_KEY` 后继续往下走；最后是 Bing，
+// 保证"永远有一个能用的搜索"。
 //
 // 安全边界：
 // - API key 只发往**校验过**的 HTTPS 端点：必须是 https、必须解析到公网地址
@@ -34,6 +44,15 @@ const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_API_VERSION = '2023-06-01';
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY';
 const DEFAULT_TIMEOUT_MS = 35000;
+const DEFAULT_ANYSEARCH_ENDPOINT = 'https://api.anysearch.com/mcp';
+const DEFAULT_ANYSEARCH_TIMEOUT_MS = 20000;
+const DEFAULT_ANYSEARCH_API_KEY_ENV = 'ANYSEARCH_API_KEY';
+// 上游返回的是整页正文（一条可以几千字）。snippet 只留开头这么多字：
+// 既够模型判断「这条是不是我要的」，又不会一条结果就顶满上下文。
+const ANYSEARCH_SNIPPET_CHARS = 400;
+// 上游 `freshness` / `content_types` 的取值白名单（多传会被服务端忽略或报错，这里先过滤）。
+const ANYSEARCH_FRESHNESS = Object.freeze(['day', 'week', 'month', 'year']);
+const ANYSEARCH_CONTENT_TYPES = Object.freeze(['web', 'news', 'code', 'doc', 'academic', 'data', 'image', 'video', 'audio']);
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 64;
@@ -49,13 +68,49 @@ const defaultConfig = Object.freeze({
   maxUses: 5,
   maxTokens: 4096,
   maxResults: 8,
-  timeoutMs: DEFAULT_TIMEOUT_MS
+  timeoutMs: DEFAULT_TIMEOUT_MS,
+  anysearch: Object.freeze({
+    // 默认开：`auto` 的第一跳。想在群里彻底不发第三方就把它关掉（provider 仍可显式指定）。
+    enabled: true,
+    endpoint: DEFAULT_ANYSEARCH_ENDPOINT,
+    apiKey: '',
+    apiKeyEnv: DEFAULT_ANYSEARCH_API_KEY_ENV,
+    timeoutMs: DEFAULT_ANYSEARCH_TIMEOUT_MS,
+    freshness: '',
+    contentTypes: Object.freeze([])
+  })
 });
 
 function num(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** `freshness` 只认 day|week|month|year；空串表示不限定时间（由服务端默认）。 */
+export function normalizeFreshness(value) {
+  const list = Array.isArray(value) ? value : [value];
+  for (const item of list) {
+    const s = String(item ?? '').trim().toLowerCase();
+    if (!s) continue;
+    if (ANYSEARCH_FRESHNESS.includes(s)) return s;
+  }
+  return '';
+}
+
+/** `content_types` 白名单过滤 + 去重（接受数组或逗号分隔字符串）。 */
+export function normalizeContentTypes(value) {
+  const list = Array.isArray(value)
+    ? value
+    : String(value ?? '').split(',');
+  const out = [];
+  for (const item of list) {
+    const s = String(item ?? '').trim().toLowerCase();
+    if (!s || !ANYSEARCH_CONTENT_TYPES.includes(s) || out.includes(s)) continue;
+    out.push(s);
+    if (out.length >= ANYSEARCH_CONTENT_TYPES.length) break;
+  }
+  return out;
 }
 
 /** 读取 config.json 里的 webSearch 段（不存在就用默认值）。 */
@@ -66,7 +121,8 @@ export function loadSearchConfig(root) {
     file = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch {}
   const raw = file?.webSearch && typeof file.webSearch === 'object' && !Array.isArray(file.webSearch) ? file.webSearch : {};
-  const provider = raw.provider === 'deepseek' || raw.provider === 'bing' ? raw.provider : 'auto';
+  const rawAny = raw.anysearch && typeof raw.anysearch === 'object' && !Array.isArray(raw.anysearch) ? raw.anysearch : {};
+  const provider = ['deepseek', 'bing', 'anysearch'].includes(raw.provider) ? raw.provider : 'auto';
   return {
     ...defaultConfig,
     provider,
@@ -77,7 +133,21 @@ export function loadSearchConfig(root) {
     maxUses: num(raw.maxUses, defaultConfig.maxUses, 1, 5),
     maxTokens: num(raw.maxTokens, defaultConfig.maxTokens, 256, 8192),
     maxResults: num(raw.maxResults, defaultConfig.maxResults, 1, 20),
-    timeoutMs: num(raw.timeoutMs, defaultConfig.timeoutMs, 5000, 120000)
+    timeoutMs: num(raw.timeoutMs, defaultConfig.timeoutMs, 5000, 120000),
+    anysearch: {
+      ...defaultConfig.anysearch,
+      enabled: rawAny.enabled !== false,
+      endpoint: typeof rawAny.endpoint === 'string' && rawAny.endpoint.trim()
+        ? rawAny.endpoint.trim()
+        : DEFAULT_ANYSEARCH_ENDPOINT,
+      apiKey: typeof rawAny.apiKey === 'string' ? rawAny.apiKey.trim() : '',
+      apiKeyEnv: typeof rawAny.apiKeyEnv === 'string' && rawAny.apiKeyEnv.trim()
+        ? rawAny.apiKeyEnv.trim()
+        : DEFAULT_ANYSEARCH_API_KEY_ENV,
+      timeoutMs: num(rawAny.timeoutMs, DEFAULT_ANYSEARCH_TIMEOUT_MS, 3000, 60000),
+      freshness: normalizeFreshness(rawAny.freshness),
+      contentTypes: normalizeContentTypes(rawAny.contentTypes)
+    }
   };
 }
 
@@ -112,6 +182,23 @@ export function resolveSearchApiKey(config) {
   const fromDsh = readDshCredential(envName);
   if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
   return { key: '', source: 'none' };
+}
+
+/**
+ * 解析 Anysearch 的 key（同一条三级顺序）。
+ * 与 DeepSeek 不同，**没有 key 不算失败**：上游允许匿名调用（额度更小），
+ * 所以这里返回 `source: 'anonymous'` 而不是抛错。
+ */
+export function resolveAnysearchApiKey(config) {
+  const anyConfig = config?.anysearch && typeof config.anysearch === 'object' ? config.anysearch : config ?? {};
+  const literal = String(anyConfig?.apiKey ?? '').trim();
+  if (literal) return { key: literal, source: 'config' };
+  const envName = String(anyConfig?.apiKeyEnv || DEFAULT_ANYSEARCH_API_KEY_ENV);
+  const fromEnv = String(process.env[envName] ?? '').trim();
+  if (fromEnv) return { key: fromEnv, source: 'env' };
+  const fromDsh = readDshCredential(envName);
+  if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
+  return { key: '', source: 'anonymous' };
 }
 
 function normalizeSearchUrl(raw) {
@@ -432,52 +519,265 @@ export async function bingSearch(query, config = defaultConfig) {
   return parseBingHtml(res.body, maxResults);
 }
 
-const cache = new Map(); // `${provider}|${query}` -> { at, value }
+/**
+ * 把上游返回的行内文本压成一行：去掉末尾的 ```yaml request_id``` 元数据块、
+ * 正文里夹带的 Markdown 标题符号，并把所有空白折叠成一个空格。
+ * 上游正文里常有多级标题（`# 标题 # 副标题`），原样塞给模型既占 token 又干扰阅读。
+ */
+function collapseText(text) {
+  return String(text ?? '')
+    .replace(/```[\s\S]*$/g, ' ')
+    .replace(/^#{1,6}\s+/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 解析 Anysearch 的 Markdown 结果。
+ *
+ * 实测格式（2026-11-02，`tools/call` → `search`）：
+ * ```
+ * ## Search Results (2 results, 896ms)
+ *
+ * ### 1. 标题
+ * - **URL**: https://example.com/a
+ * - 正文字段（可能是整页正文，几千字，含 `#` 标题）
+ *
+ * ### 2. ...
+ * ```yaml
+ * request_id: ...
+ * ```
+ * ```
+ * 只取「标题 / URL / 正文前 400 字」，其余一律丢弃（token 预算）。
+ */
+export function parseAnysearchMarkdown(text, maxResults = 8) {
+  const results = [];
+  const seen = new Set();
+  // 用行首的 `### ` 切分结果块；第一个块是 `## Search Results` 抬头，丢掉。
+  const blocks = String(text ?? '').split(/^###\s+/m).slice(1);
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    // `### 1. 标题` —— 序号是上游的排名，不是标题的一部分。
+    const title = collapseText(lines[0] ?? '').replace(/^\d+\s*[.、)]\s*/, '').slice(0, 200);
+    const urlLine = lines.find((line) => /\*\*URL\*\*/i.test(line)) ?? '';
+    const urlMatch = /(https?:\/\/[^\s)）]+)/i.exec(urlLine);
+    const url = normalizeSearchUrl(urlMatch ? urlMatch[1].replace(/[.,;]+$/, '') : '');
+    if (!url || seen.has(url)) continue;
+    const urlIndex = lines.indexOf(urlLine);
+    // 正文常以 `- ` 列表符开头、内部夹着 `# 标题 #` 的重复标题：都清掉，只留能读的正文。
+    let body = collapseText(lines.slice(urlIndex + 1).join('\n'))
+      .replace(/^(?:[-*+]\s+)+/, '')
+      .replace(/^#\s*/, '')
+      .replace(/\s#\s/g, ' ');
+    // 正文开头往往是标题的重复（`# 标题 # 标题 正文…`），重复的标题不占 token。
+    if (title) {
+      const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      body = body.replace(new RegExp(`^(?:${escaped}\\s*)+`), '');
+    }
+    body = body.slice(0, ANYSEARCH_SNIPPET_CHARS);
+    seen.add(url);
+    results.push({ title: title || url, url, ...(body ? { snippet: body } : {}) });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+/**
+ * Anysearch 的失败统一带上 `code` + `hint`（AGENTS §1.7：新增失败路径必须可操作）。
+ * `hint` 是给调用方/人看的下一步，不是给模型猜的。
+ */
+const ANYSEARCH_HINT = '本机网络或 api.anysearch.com 不可用时可设 webSearch.anysearch.enabled=false，搜索会自动退回 DeepSeek/Bing';
+function anysearchError(code, message, hint = ANYSEARCH_HINT, extra = {}) {
+  return Object.assign(new Error(message), { code, hint, ...extra });
+}
+
+/**
+ * Anysearch 实时检索（JSON-RPC 2.0 `tools/call` → `search`）。
+ *
+ * 为什么不复用 MCP SDK 直连上游：那会把整个上游的工具表（含它自己的长描述与
+ * 「MANDATORY 提交打分」要求）暴露给模型。这里只借它的**一条数据通道**：
+ * 一次 POST、只取 `result.content[].text`，然后把 Markdown 解析成统一结构。
+ *
+ * `options`: `{ maxResults, freshness, contentTypes }`（MCP 层的可选参数落到这里）。
+ */
+export async function anysearchSearch(query, config = defaultConfig, options = {}) {
+  const anyConfig = config?.anysearch && typeof config.anysearch === 'object'
+    ? { ...defaultConfig.anysearch, ...config.anysearch }
+    : defaultConfig.anysearch;
+  const maxResults = num(options.maxResults ?? config.maxResults, defaultConfig.maxResults, 1, 20);
+  const freshness = normalizeFreshness(options.freshness ?? anyConfig.freshness);
+  const contentTypes = normalizeContentTypes(options.contentTypes ?? anyConfig.contentTypes);
+  // 端点校验失败（非 https / 内网 / 带凭据）在发请求之前就停下：不要把查询词发给不合格的地址。
+  let url;
+  let addresses;
+  try {
+    ({ url, addresses } = await validateSearchEndpoint(anyConfig.endpoint || DEFAULT_ANYSEARCH_ENDPOINT));
+  } catch (error) {
+    throw anysearchError(
+      'BAD_ENDPOINT',
+      `Anysearch 端点不可用：${error?.message ?? error}`,
+      'webSearch.anysearch.endpoint 必须是解析到公网的 https 地址（默认 https://api.anysearch.com/mcp）'
+    );
+  }
+  const args = { query: String(query ?? '').slice(0, 200), max_results: maxResults };
+  if (freshness) args.freshness = freshness;
+  if (contentTypes.length) args.content_types = contentTypes;
+  const body = JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: { name: 'search', arguments: args }
+  });
+  const headers = {
+    'content-type': 'application/json',
+    accept: 'application/json',
+    // 上游对无 UA 的客户端会拒，显式给一个（不含任何本机信息）。
+    'user-agent': 'qq-bridge-web-search/0.3.0'
+  };
+  const { key } = resolveAnysearchApiKey(anyConfig);
+  if (key) headers.authorization = `Bearer ${key}`;
+  let response;
+  try {
+    response = await postJson(url, addresses, {
+      headers,
+      body,
+      timeoutMs: anyConfig.timeoutMs || DEFAULT_ANYSEARCH_TIMEOUT_MS
+    });
+  } catch (error) {
+    // 连接/超时/重定向被拒：给个稳定的 code，别让调用方去解析中文文案。
+    throw anysearchError('NETWORK_ERROR', `Anysearch 请求失败：${error?.message ?? error}`);
+  }
+  if (response.status < 200 || response.status >= 300) {
+    // 只回显状态与主体里的简短原因，绝不回显请求头（可能带 key）。
+    let detail = '';
+    try {
+      const parsed = JSON.parse(response.text);
+      const message = parsed?.error?.message ?? parsed?.message ?? parsed?.error;
+      if (typeof message === 'string') detail = message.slice(0, 200);
+    } catch {}
+    throw anysearchError(
+      'HTTP_ERROR',
+      `Anysearch 接口 HTTP ${response.status}${detail ? `：${detail}` : ''}`,
+      undefined,
+      { status: response.status }
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(response.text);
+  } catch {
+    throw anysearchError('BAD_BODY', 'Anysearch 返回了无法解析的响应');
+  }
+  if (parsed?.error) {
+    const message = String(parsed.error?.message ?? parsed.error?.code ?? '未知错误').slice(0, 200);
+    throw anysearchError('RPC_ERROR', `Anysearch 返回错误：${message}`);
+  }
+  const content = Array.isArray(parsed?.result?.content) ? parsed.result.content : [];
+  const text = content
+    .filter((item) => item?.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text)
+    .join('\n');
+  if (parsed?.result?.isError) {
+    // 上游把「额度用完 / 查询被拒」这类情况也放在 isError 里，属于**可回退**的失败。
+    throw anysearchError(
+      'UPSTREAM_ERROR',
+      `Anysearch 上游报错：${collapseText(text).slice(0, 200) || '未给出原因'}`,
+      'Anysearch 拒绝了这次查询（额度或内容限制）；auto 模式会自动回退，显式 provider=anysearch 时请改用 auto'
+    );
+  }
+  if (!text) throw anysearchError('BAD_BODY', 'Anysearch 没有返回文本结果');
+  return parseAnysearchMarkdown(text, maxResults);
+}
+
+const cache = new Map(); // `${provider}|${query}|...` -> { at, value }
 
 export function clearSearchCache() {
   cache.clear();
 }
 
+/** 回退链里每家失败原因的文案（`auto` 最后把这几条拼起来，别让调用方只看到最后一家的错）。 */
+function describeSearchFailure(provider, error) {
+  if (provider === 'deepseek' && error?.code === 'NO_KEY') return '未配置 DeepSeek 搜索凭据';
+  const label = provider === 'anysearch'
+    ? 'Anysearch 搜索不可用'
+    : provider === 'deepseek'
+      ? 'DeepSeek 搜索不可用'
+      : 'Bing 搜索不可用';
+  return `${label}：${error?.message ?? error}`;
+}
+
 /**
- * 统一入口：按配置选择 provider；`auto` 先试 DeepSeek（与 DSH 同源），失败回退 Bing。
- * @returns {{query:string, provider:'deepseek'|'bing', results:object[], fallbackFrom?:string, note?:string}}
+ * 统一入口：按配置选择 provider。
+ *
+ * `auto` 顺序 = **Anysearch → DeepSeek → Bing**：
+ * - 前一路**报错**就换下一路；前一路**返回空结果**也继续换（空结果往往只是这家没收录），
+ *   但会把第一个空结果留着，全部为空时返回它 + note。
+ * - `webSearch.anysearch.enabled: false` 时跳过第一路（担心数据外发就关这里）。
+ * - 显式 `provider: "deepseek" | "bing" | "anysearch"` 时**不回退**：错就错，
+ *   免得「以为在用 A，其实悄悄换成了 B」（旧行为，测试钉着）。
+ *
+ * @returns {{query:string, provider:'anysearch'|'deepseek'|'bing', results:object[], fallbackFrom?:string, note?:string}}
  */
 export async function webSearch(query, options = {}) {
   const q = String(query ?? '').trim();
   if (!q) throw new Error('查询词为空');
   const config = { ...loadSearchConfig(options.root ?? process.cwd()), ...(options.config ?? {}) };
   const wanted = options.provider ?? config.provider;
-  const cacheKey = `${wanted}|${q}|${config.maxResults}`;
+  const maxResults = num(options.maxResults ?? config.maxResults, defaultConfig.maxResults, 1, 20);
+  const freshness = normalizeFreshness(options.freshness ?? config.anysearch?.freshness);
+  const contentTypes = normalizeContentTypes(options.contentTypes ?? config.anysearch?.contentTypes);
+  const cacheKey = [wanted, q, maxResults, freshness || '-', contentTypes.join(',') || '-'].join('|');
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
-  const attemptDeepSeek = async () => {
-    const results = await deepseekSearch(q, config);
-    return { query: q, provider: 'deepseek', results };
-  };
-  const attemptBing = async () => {
-    const results = await bingSearch(q, config);
-    return { query: q, provider: 'bing', results };
+  const scopedConfig = { ...config, maxResults };
+  const attempts = {
+    anysearch: async () => ({
+      query: q,
+      provider: 'anysearch',
+      results: await anysearchSearch(q, scopedConfig, { maxResults, freshness, contentTypes })
+    }),
+    deepseek: async () => ({ query: q, provider: 'deepseek', results: await deepseekSearch(q, scopedConfig) }),
+    bing: async () => ({ query: q, provider: 'bing', results: await bingSearch(q, scopedConfig) })
   };
 
   let value;
-  if (wanted === 'deepseek') {
-    value = await attemptDeepSeek();
-  } else if (wanted === 'bing') {
-    value = await attemptBing();
+  if (Object.hasOwn(attempts, wanted)) {
+    // 显式指定：只走这一家，失败就抛（调用方要能看出「是哪一家不行」）。
+    value = await attempts[wanted]();
   } else {
-    try {
-      value = await attemptDeepSeek();
-    } catch (error) {
-      const reason = error?.code === 'NO_KEY' ? '未配置 DeepSeek 搜索凭据' : `DeepSeek 搜索不可用：${error?.message ?? error}`;
+    const order = [];
+    if (scopedConfig.anysearch?.enabled !== false) order.push('anysearch');
+    order.push('deepseek', 'bing');
+    const reasons = [];
+    let emptyValue = null;
+    let firstFailed = '';
+    for (const name of order) {
       try {
-        value = await attemptBing();
-      } catch (bingError) {
-        // 两个后端都失败时把**两边**的原因都带出来，否则调用方只会看到 Bing 的错，
-        // 完全不知道 DeepSeek 这一路为什么不行（排查时最需要的信息）。
-        throw new Error(`${reason}；Bing 兜底也失败：${bingError?.message ?? bingError}`);
+        const attempt = await attempts[name]();
+        if (attempt.results.length) {
+          value = attempt;
+          break;
+        }
+        emptyValue = emptyValue ?? attempt;
+      } catch (error) {
+        reasons.push(describeSearchFailure(name, error));
+        if (!firstFailed) firstFailed = name;
       }
-      value = { ...value, fallbackFrom: 'deepseek', note: `${reason}，已回退 Bing` };
+    }
+    if (value && firstFailed && value.provider !== firstFailed) {
+      // 回退成功：把「上一路为什么不行」带上，否则日志里只看得到成功，查不出退化。
+      value = { ...value, fallbackFrom: firstFailed, note: `${reasons.join('；')}，已回退 ${value.provider}` };
+    } else if (!value) {
+      if (emptyValue) {
+        value = emptyValue;
+      } else {
+        // 三家全挂：把每一路的原因都带上（只报最后一家会让排查者以为是 Bing 的问题）。
+        throw Object.assign(new Error(reasons.join('；') || '没有可用的搜索后端'), {
+          code: 'ALL_FAILED',
+          hint: '检查本机网络；DeepSeek 一路需要 webSearch.apiKey 或 DSH 凭据里的 DEEPSEEK_API_KEY，不需要就在配置里关掉 provider 之外的依赖'
+        });
+      }
     }
   }
   // 空结果必须显式说明：以前直接返回 `results: []`，模型分不清「真没搜到」和

@@ -157,6 +157,7 @@ export const SECRET_PATHS = new Set([
   'dsh.authToken',
   'snowluma.accessToken',
   'webSearch.apiKey',
+  'webSearch.anysearch.apiKey',
   'consoleToken',
 ]);
 

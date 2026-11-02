@@ -4,9 +4,9 @@
 // - 只暴露只读工具 `web_search` 与 `web_fetch`：查网络用语/梗/黑话、抓取网页正文。
 // - 不暴露任何本地文件、命令执行、写操作。
 // - 查询词做基础清洗：去 CQ 码、控制字符、超长截断。
-// - 搜索：优先走 **DSH 同一路 DeepSeek 联网搜索**（src/web-search.js：同一端点/模型/
-//   服务端 web_search 工具，凭据取 config/env/DSH 的 .credentials.yaml），
-//   不可用时回退 Bing（RSS 优先）。搜索词不再默认发给 Bing。
+// - 搜索：`auto` 链路 = **Anysearch（实时检索）→ DeepSeek 原生联网搜索 → Bing**，
+//   实现在 src/web-search.js。注意 Anysearch 是第三方：搜索词会发给
+//   api.anysearch.com（`webSearch.anysearch.enabled: false` 可关掉这一跳）。
 // - `web_fetch` 仅允许 http/https：
 //   - 禁止 URL 内嵌凭据；
 //   - 禁止 localhost / .local / 私有 IP / 环回 / 链路本地 / CGNAT 等内网地址；
@@ -49,19 +49,29 @@ function sanitizeQuery(query) {
     .slice(0, 120);
 }
 
-const server = new McpServer({ name: 'web-search-safe', version: '0.2.0-r4' });
+const server = new McpServer({ name: 'web-search-safe', version: '0.3.0' });
+
+// 与 src/web-search.js 的白名单保持一致（多传的值在那边也会被过滤，这里先挡在 schema 层）。
+const FRESHNESS_VALUES = ['day', 'week', 'month', 'year'];
+const CONTENT_TYPE_VALUES = ['web', 'news', 'code', 'doc', 'academic', 'data', 'image', 'video', 'audio'];
 
 server.tool(
   'web_search',
-  '只读联网搜索：优先使用与 DSH 相同的 DeepSeek 联网搜索（结果更准、不把群里的词发给搜索引擎广告网络），不可用时自动回退 Bing。返回标题/URL/摘要，不执行任何本地操作。适合查网络用语、梗、事实性问题和热点。',
-  { query: z.string().describe('要搜索确认的网络用语/黑话/梗/事实性问题') },
-  async ({ query }) => {
+  '只读实时联网搜索：默认走 Anysearch（实时网页检索，返回标题/URL/摘要），不可用或没有结果时自动回退 DeepSeek 同一路联网搜索，最后回退 Bing。返回标题/URL/摘要，不执行任何本地操作。适合查网络用语、梗、事实性问题、新闻热点。可选 freshness 限定时效、contentTypes 指定只要新闻/文档/代码等。',
+  {
+    query: z.string().describe('要搜索确认的网络用语/黑话/梗/事实性问题'),
+    maxResults: z.number().int().min(1).max(20).optional().describe('要几条结果，默认取配置（一般 8）'),
+    freshness: z.enum(FRESHNESS_VALUES).optional().describe('时效：day=一天内 / week=一周内 / month=一月内 / year=一年内；不填不限定'),
+    contentTypes: z.array(z.enum(CONTENT_TYPE_VALUES)).max(CONTENT_TYPE_VALUES.length).optional()
+      .describe('内容类型，可多选：web/news/code/doc/academic/data/image/video/audio；不填为通用网页')
+  },
+  async ({ query, maxResults, freshness, contentTypes }) => {
     const clean = sanitizeQuery(query);
     if (!clean) {
       return { content: [{ type: 'text', text: '查询词为空，已拒绝。' }], isError: true };
     }
     try {
-      const result = await webSearch(clean, { root: projectRoot() });
+      const result = await webSearch(clean, { root: projectRoot(), maxResults, freshness, contentTypes });
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
       return {

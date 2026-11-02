@@ -146,7 +146,8 @@
 | 会出机的数据 | 去哪 | 怎么关 |
 | --- | --- | --- |
 | 群聊文本（拼进提示词） | DeepSeek API | 关掉对应模式 / 不给白名单 |
-| 黑话词条 | 搜索后端（DeepSeek 搜索或 Bing） | `slang.autoResearch=false` 或 `webSearch.provider=bing` |
+| 黑话词条 | 搜索后端（**Anysearch 第三方** / DeepSeek 搜索 / Bing） | `slang.autoResearch=false`；只关第三方：`webSearch.anysearch.enabled=false` |
+| **聊天里触发的搜索词** | **api.anysearch.com（第三方，2026-11-02 起是 `auto` 的第一跳）** | `webSearch.anysearch.enabled=false`（回退 DeepSeek/Bing）或 `webSearch.provider=deepseek` |
 | B站 公开内容（视频/评论） | 本机模型调用 | 关 `biliBridge.memory.enabled` |
 | 主人邮箱/私信内容（若启用） | 模型调用 | 默认不进记忆卡（`blockPrivateMessages`） |
 | 桌宠对话 | 本机模型调用 | 关桌宠对话或 `pet.chat.enabled=false` |

@@ -190,7 +190,7 @@
 | 二代 · 主动与反馈（10 项） | `socialV2.proactive.enabled/checkIntervalMinMs/checkIntervalMaxMs/idleThresholdMs/probability`、`feedback.maxLength/notifyOwnerOnError`、`media.maxBytes/maxPixels/maxCount` |
 | 群聊（chat 模式，11 项） | `chat.contextMessages`、`chat.groupContextMessages`(json)、`chat.addressFilter.enabled/silenceWhenAddressedToOther`、`chat.presence.enabled/onlineShare/offlineMinMs/wakeWindowMs`、`chat.proactive.enabled/minIntervalMs/minMessages` |
 | 黑话学习（8 项） | `slang.enabled`、`extractMinMessages`、`extractCooldownMs`、`inferenceThresholds`(list)、`injectMax`、`learnerPreset`、`workspaceTitle`、`autoResearch` |
-| 联网搜索（9 项） | `webSearch.provider`(select auto/deepseek/bing)、`apiKeyEnv`、`apiKey`(password)、`baseURL`、`model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs` |
+| 联网搜索（16 项） | `webSearch.provider`(select auto/anysearch/deepseek/bing)、`apiKeyEnv`、`apiKey`(password)、`baseURL`、`model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`；`webSearch.anysearch.enabled`(switch)、`endpoint`、`apiKey`(password)、`apiKeyEnv`、`timeoutMs`、`freshness`(select 不限定/一天内/一周内/一月内/一年内)、`contentTypes`(list 逗号分隔) |
 | 二代 · 工具开关（动态） | 由 `cfg.socialV2.tools` 的现有键生成，标签取 `TOOL_LABELS`（27 个中文名映射，`client.js:914-922`），写 `socialV2.tools.<key>`（`client.js:1693-1695`） |
 | 表情包（9 项） | `socialV2.sticker.enabled/syncTtlMs/maxListCount/includeInPrompt/promptMaxStickers/collect.enabled/collect.maxPerMinute/collect.maxPerHour/collect.maxRemarkChars`（`client.js:1696-1706`） |
 | 语音（11 项） | `socialV2.voice.enabled/dir/maxSeconds/maxBytes/maxPerMinute/maxPerHour/allowAbsolutePath/defaultVolume/loudness/ffmpegPath/autoReadback`（`client.js:1707-1719`） |

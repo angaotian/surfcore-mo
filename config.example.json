@@ -379,7 +379,16 @@
     "maxUses": 5,
     "maxTokens": 4096,
     "maxResults": 8,
-    "timeoutMs": 35000
+    "timeoutMs": 35000,
+    "anysearch": {
+      "enabled": true,
+      "endpoint": "https://api.anysearch.com/mcp",
+      "apiKey": "",
+      "apiKeyEnv": "ANYSEARCH_API_KEY",
+      "timeoutMs": 20000,
+      "freshness": "",
+      "contentTypes": []
+    }
   },
   "purpose": {
     "enabled": true,

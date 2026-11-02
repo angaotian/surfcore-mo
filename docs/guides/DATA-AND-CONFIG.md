@@ -166,8 +166,13 @@
 
 ### 1.12 联网搜索 / 目的 / 问候
 
-- `webSearch`：`provider`（`auto` → DeepSeek 优先、Bing 兜底）、`apiKey` / `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`）、
-  `model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`。
+- `webSearch`：`provider`（`auto` → **Anysearch 优先**、DeepSeek 次之、Bing 兜底；也可显式 `anysearch|deepseek|bing`）、
+  `apiKey` / `apiKeyEnv`（默认 `DEEPSEEK_API_KEY`）、`model`、`maxUses`、`maxTokens`、`maxResults`、`timeoutMs`。
+  - `webSearch.anysearch`（2026-11-02 接入的实时检索，第三方）：`enabled`（默认 `true`；**设为 `false` 是唯一「不把查询词发给
+    api.anysearch.com」的开关**）、`endpoint`（默认 `https://api.anysearch.com/mcp`，必须 https + 解析到公网）、
+    `apiKey` / `apiKeyEnv`（默认 `ANYSEARCH_API_KEY`；**留空为匿名**，匿名不是失败，只是额度更小）、
+    `timeoutMs`（默认 20000，夹在 3–60s）、`freshness`（`''|day|week|month|year`）、`contentTypes`（`web/news/code/doc/
+    academic/data/image/video/audio` 子集，数组或逗号串）。MCP 层 `web_search` 也接受同名可选参数**按次覆盖**。
 - `purpose`：`enabled`、`gapMinMs/gapMaxMs`（15–30 分钟随机间隔）、`initialDelayMinMs`、`dailyMax`（4）、
   `quietStart/quietEnd`（23:30–08:30）、`idleThresholdMs`（主人空闲 30 分钟）、`materialWindowHours`、
   `biliWindowDays`、`maxMaterials`、`minMaterials`、`retryMs`、`maxAttempts`、`maxCandidates`、`promptMaxChars`。
@@ -185,7 +190,7 @@
 ## 2. `~/.dsh/surfcore/config.json`（合体层）
 
 由插件 `store.js` 管理：**读给 UI 时脱敏**（`SECRET_PATHS`：`dsh.authToken`、`snowluma.accessToken`、
-`webSearch.apiKey`、`consoleToken`），保存时 `********` 表示"保持原值"；写入前自动备份、原子替换；
+`webSearch.apiKey`、`webSearch.anysearch.apiKey`、`consoleToken`），保存时 `********` 表示"保持原值"；写入前自动备份、原子替换；
 `__proto__`/`prototype`/`constructor` 被禁止（防原型污染）。
 
 | 段 | 关键键 | 说明 |

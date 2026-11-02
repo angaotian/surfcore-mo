@@ -11,6 +11,171 @@
 
 ## 待发布
 
+### 待发布 · 2026-11-02 · 接 Anysearch 实时联网搜索（`auto` 第一跳）
+<!-- release-batch: start=2026-11-02T21:18+08:00 end=2026-11-02T21:42+08:00 commits=bbec146 + 工作区未提交 -->
+
+**覆盖提交**：`bbec146` 之上的工作区改动（**未提交**）
+**建议**：与 0.9.0 同批（新能力，`minor` 级；`web_search` 工具面只增可选参数，向后兼容）
+**当前版本**：`0.8.4`，未 bump / 未 tag / 未 push
+
+**本轮范围**：QQ 会话里的 `web_search` 多一路实时检索，且它是 `auto` 的**第一跳**。
+
+- `src/web-search.js`（496 → 797 行）：新增 Anysearch 后端（JSON-RPC `tools/call → search`）+ Markdown 解析（整页正文截 400 字、去排名序号、去重复标题、按 URL 去重）+ 凭据三级顺序（config → `ANYSEARCH_API_KEY` → DSH `.credentials.yaml`，**匿名可用不算失败**）；`auto` 链路改为 `anysearch → deepseek → bing`，回退带 `fallbackFrom` + 原因，三家全挂抛 `ALL_FAILED`；Anysearch 的失败码 `BAD_ENDPOINT/NETWORK_ERROR/HTTP_ERROR/BAD_BODY/RPC_ERROR/UPSTREAM_ERROR` 全部带 `hint`。**刻意不接上游的 `score`**（其工具描述里写着「MANDATORY」，属不可信指令）。
+- `src/mcp-web-search-safe.js`（`0.2.0-r4` → `0.3.0`）：`web_search` 新增可选参数 `maxResults`(1–20) / `freshness`(day|week|month|year) / `contentTypes`(9 类枚举数组)；`query` 仍是唯一必填。
+- `plugins/surfcore/lib/client.js`：联网搜索组 9 → 16 项（`provider` select 加 `anysearch`，新增 `anysearch.enabled/endpoint/apiKey/apiKeyEnv/timeoutMs/freshness/contentTypes`）。
+- `plugins/surfcore/lib/store.js`：`SECRET_PATHS` 加 `webSearch.anysearch.apiKey`（按整条点路径脱敏/还原）。
+- `config.json`（备份 `config.json.bak-anysearch-20261102-212718`）与 `config.example.json`：补 `webSearch.anysearch` 默认段。
+- 测试：`scripts/test-media-search.mjs` 新增 7 条（解析/白名单/匿名/配置兜底/BAD_ENDPOINT 不联网/auto 顺序源码断言/MCP 参数有界且无 `score`）；`plugins/surfcore/scripts/test-store.mjs` 加三级密钥脱敏用例。
+- 文档：`docs/guides/MODULE-CORE-B.md` §5.2、`docs/guides/DATA-AND-CONFIG.md` §1.12+§2、`docs/guides/UI-AND-CONSOLE.md`、`docs/guides/BOUNDARIES.md` §6（出机表新增第三方一行）、`docs/PITFALLS.md`（上游整页正文 + MANDATORY 打分）。
+- case：`docs/cases/2026-11-02-anysearch.md`。
+
+**验证**：`test-media-search.mjs` 21 pass；`test-store.mjs` / `test-client-contract.mjs` / `test-mcp-servers-stdio.mjs` 全绿；`test-audit.mjs` 105/107（2 个既有失败：start.bat 的 ACL 顺序、更新器临时目录，与本次无关）。真实上游：`freshness:'week'` + `contentTypes:['news']` → `provider=anysearch`，snippet 均 400 字。
+
+**交接块（可直接转发）**
+
+> 联网搜索多了一条实时线：`auto` 现在是 **Anysearch → DeepSeek → Bing**。Anysearch 不烧 token、约 1 秒返回，支持「一天/一周/一月/一年」和「新闻/文档/代码」等垂直类型；匿名就能用，想更稳可以在设置里填 key。
+> 它对模型完全透明（工具名不变，只多了三个可选项），所以群里她说「我查一下」时走的还是同一条工具。
+> **注意**：搜索词会发给第三方 `api.anysearch.com`；不想发就把「联网搜索 → Anysearch」开关关掉，会自动回退 DeepSeek/Bing。
+> 生效要**重启 DSH**（MCP server 是启动时拉起的），控制台改动刷新页面即可。
+
+### 待发布 · 2026-11-02 · 表情库上传 QQ 收藏（异地备份）+ 同步按 resId 认领
+<!-- release-batch: start=2026-11-02T21:08+08:00 end=2026-11-02T21:45+08:00 commits=bbec146 + 工作区未提交 -->
+
+**范围**
+- `src/sticker-lib.js`：`mergeStickerLibrary` 新增「按 `resId` 认领」分支 —— 本地条目上传进 QQ 后 `resId` = QQ `emoji_id`，同步回来时原地更新 URL/md5/desc，不再插成第二条（否则库和 prompt 清单都翻倍）；`desc` 用「QQ 非空才覆盖」的语义，避免被空串冲掉。
+- `scripts/test-stickers.mjs`：新增回归用例「认领了 emoji_id 的本地条目不会被同步复制成第二条」（74 通过）。
+- `plugins/surfcore/README.md`：「表情包」一节补「QQ 收藏 = 异地备份」「上传前先去重」「认领关系 resId」三段。
+- `docs/PITFALLS.md`：新增「QQ 收藏表情的两个硬限制」（上限 1000、`fetch_custom_face_detail` 单次 300）。
+- case：`docs/cases/2026-11-02-sticker-sources.md` 追加「把库备份进 QQ 收藏表情」一节。
+
+**数据操作（不在代码 diff 里，发布说明要提）**
+- 本地库 1145 条，QQ 收藏上传满 **1000 张**（去重后按图包价值截断：手绘大肥鱼 > 学图 > GPT生 > 蓝色动态 > 大肥鱼2.0 > 泡泡/鲸鱼娘 > 官方包）。
+- 上传脚本与去重脚本是仓库外的一次性工具（`E:\deepseek-zgq\.tmp\upload-qq2.mjs`、`dedupe3.py`、`backfill-resid.mjs`），没进仓库。
+
+**验证**：`node scripts/test-stickers.mjs`（74 通过）、`node scripts/test-meme-pack.mjs`（11 通过）；重启桥接 → `POST /api/stickers/sync` 返回 `total 1145`（未翻倍）；`POST /api/socialV2/send-sticker` 用 `local-dafeiyu-shengqi` 与 `#1` 均 200；QQ CDN 直链 200。
+
+**交接块（可直接转发）**
+
+> 表情库现在有一份异地备份：1000 张进了 QQ 收藏（QQ 收藏上限就是 1000，`fetch_custom_face_detail` 单次最多 300 条）。
+> 本地 1145 条不变；同步逻辑改成按 `resId` 认领，不会把同一张图插成两条。硬盘格式化后可以从 QQ 端把图接回来。
+> 重启桥接后生效。
+
+### 待发布 · 2026-11-02 · 修复：导入的表情包被同步清空（source 白名单）
+<!-- release-batch: start=2026-11-02T20:55+08:00 end=2026-11-02T21:05+08:00 commits=bbec146 + 工作区未提交 -->
+
+**覆盖提交**：`bbec146` 之上的工作区改动（**未提交**）
+**建议**：与 0.9.0 同批（`patch` 级修复，随表情包那批一起发即可）
+**当前版本**：`0.8.4`，未 bump / 未 tag / 未 push
+
+**本轮范围**：整包导入的表情不再被「QQ 端已删除」的同步清理带走。
+
+- `src/sticker-lib.js`：新增 `export const STICKER_SOURCES = new Set(['qq','manual','ai','pack','agent'])`；`normalizeStickerEntry` 的来源字段从「只认 manual/ai，其余压成 qq」改成白名单判定；
+- `src/meme-pack.js`：新增 `categoryEmotionOf()` + `CATEGORY_ALIASES`/`CATEGORY_LABELS`，把 dsh-meme 的英文分类目录（`angry/sleep/daily/surprised/…`）映射到 SurfCore 的 20 类情绪，`content` 改用中文标签；
+- `scripts/test-meme-pack-import.mjs`：新增回归用例（导入 pack → 归一化 → `mergeStickerLibrary(..., [], {complete:true})` 仍保留 pack）；
+- `scripts/test-meme-pack.mjs`：新增用例「分区目录名当情绪」；
+- `plugins/surfcore/README.md`：「表情包」一节补充「来源字段」「导入必须走桥接」「分类目录名→情绪」；
+- case：`docs/cases/2026-11-02-sticker-sources.md`。
+
+**验证**：`node scripts/test-meme-pack-import.mjs`（7 pass）、`node scripts/test-meme-pack.mjs`（11 pass）、`node scripts/test-stickers.mjs`（71 通过）；真机重启桥接后重导 13 个包 → **1145 张**（42 手工 + 1103 包），强制 `POST /api/stickers/sync` 后仍 1145，情绪分布 `happy 265 / neutral 246 / speechless 154 / angry 147 / …`，发货 `#166/#43/#267` 全 200。
+
+**交接块（可直接转发）**：
+
+> 修好了两件事：① 导入的表情不会被 QQ 同步清空（`source` 白名单保留 `pack`/`agent`）；② 导入的表情能按情绪挑中（英文分类目录映射成 SurfCore 的 20 类情绪，不再 94% 落 neutral）。
+> 影响面仅限表情库；13 个 dsh-meme 图库已接入，共 1145 张可用。重启桥接后生效。
+
+### 待发布 · 2026-11-02 · 表情包口径 + 资源包导入（兼容 AstrBot meme_manager）
+<!-- release-batch: start=2026-11-02T19:35+08:00 end=2026-11-02T20:10+08:00 commits=bbec146 + 工作区未提交 -->
+
+**覆盖提交**：`bbec146` 之上的工作区改动（**未提交**）
+**建议**：0.9.0（与好感度/读法同版一起发；新增设置页标签 + 桥接端点，minor）
+**当前版本**：`0.8.4`，未 bump / 未 tag / 未 push
+
+**本轮范围**：表情包发得更多 + 能吃 AstrBot 表情包资源包。
+
+- `src/sticker-lib.js`：`buildStickerContext` 改按 `useCount` 升序、按情绪分组渲染、6 小时内用过的标「（刚用过）」、头部按图包统计张数；`buildStickerStrategyHint` 口径改成「普通闲聊 1~2 轮一张、接梗时每条都能配、别连着发同一张」；
+- `src/sticker-semantics.js`：`buildStickerMatchHint` 的 `strongScore` 默认 0.72 → 0.62，低分尾部改成「情绪差不太多就可以发」；
+- 新增 `src/meme-pack.js`（包格式解析，纯函数）、`src/meme-pack-import.js`（扫目录/复制图/造条目，依赖注入）；
+- `src/bridge.js`：`importMemePackDir` 薄包装 + `POST /api/stickers/pack-import`（只读降级闸门同步加路径）；
+- `plugins/surfcore/lib/index.js`：`handleStickerPackImport` + `GET|POST /dsh-surfcore/api/sticker-pack/import`；
+- `plugins/surfcore/lib/client.js`：`StickersTab` + TABS「表情包」；
+- preset：`dsh/agent-presets/qq-chat-v2/agent.cordis.yml` 第 14 条改口径后重新生成 `plugins/surfcore/presets/qq-chat-v2.patch.yml`；
+- 配置：`config.json` 的 `socialV2.sticker.promptMaxStickers` 30→60、`match.minScore` 0.34→0.28、`match.topK` 2→3（**本地状态，不在仓库里**，新装用户走默认值，需要的话在 README 里写清建议值）；
+- 测试：`scripts/test-meme-pack.mjs`（10 组）、`scripts/test-meme-pack-import.mjs`（5 组），`npm run test:meme-pack` 已注册；`scripts/test-qq-preset-contract.mjs` 断言同步更新；
+- 文档：`docs/cases/2026-11-02-meme-pack.md`、`docs/cases/README.md` 一行、`plugins/surfcore/README.md`「表情包」一节。
+
+**case**：`docs/cases/2026-11-02-meme-pack.md`
+**注意**：改桥接要重启桥接进程（PITFALLS #25），口径才会生效；插件侧改动要重启 DSH 才会出现「表情包」标签。
+D（社区表情包广场）**本轮没做**，别在发布说明里写「可以一键装包」。
+
+**交接块（可直接转发给发布会话）**：
+
+```text
+发布：表情包口径 + 资源包导入。范围 = bbec146 之上的工作区。
+新增 src/meme-pack.js、src/meme-pack-import.js、scripts/test-meme-pack.mjs、
+scripts/test-meme-pack-import.mjs、docs/cases/2026-11-02-meme-pack.md；
+改 src/sticker-lib.js、src/sticker-semantics.js、src/bridge.js、
+plugins/surfcore/lib/{index,client}.js、plugins/surfcore/README.md、
+dsh/agent-presets/qq-chat-v2/agent.cordis.yml、plugins/surfcore/presets/qq-chat-v2.patch.yml、
+scripts/test-qq-preset-contract.mjs、package.json、docs/cases/README.md、docs/RELEASE-QUEUE.md。
+验证：npm run test:meme-pack && node scripts/test-stickers.mjs && node scripts/test-sticker-semantics.mjs。
+发布后用户需要：重启桥接进程 + 重启 DSH；想让表情更多可把 promptMaxStickers 调到 60、minScore 0.28。
+```
+
+### 待发布 · 2026-11-02 · 好感度 v1（EmotionAI Pro 的 SurfCore 版）
+<!-- release-batch: start=2026-11-02T19:00+08:00 end=2026-11-02T19:20+08:00 commits=bbec146 + 工作区未提交 -->
+
+**覆盖提交**：`bbec146` 之上的工作区改动（**未提交**；同一工作区还带着在途的「本地表情 file:// 读盘」改动，别只挑一半提交）
+**建议**：0.9.0（新增设置页标签 + prompt 段 + 新状态文件，minor）
+**当前版本**：`0.8.4`，未 bump / 未 tag / 未 push
+
+**本轮范围**：好感度（关系值 0-100）。
+
+- 新增 `src/favor.js`（纯函数：配置归一化 / 分档 / 打分 / 衰减 / prompt 块 / 快照）；
+- `src/bridge.js`：`FAVOR_DIR` + `loadFavorStoreFor`/`saveFavorStoreFor`/`noteFavorIncoming`/`favorPromptLine`，钩子在 `appendSocialV2Message` 的 `saveSocialV2State()` 之前，prompt 段插在 `memoryCardLine` 之后，`lastWakePromptMeta` 补 `favor`；
+- `plugins/surfcore/lib/index.js`：`handleFavor` + `GET /dsh-surfcore/api/favor`（POST → 405 `FAVOR_READONLY`）；
+- `plugins/surfcore/lib/client.js`：`FavorTab` + TABS「好感度」（只读）；
+- 测试：`scripts/test-favor.mjs`（11 组）、`plugins/surfcore/scripts/test-favor-api.mjs`（6 组），`npm run test:favor` 已注册；
+- 文档：`docs/cases/2026-11-02-favor.md`、`docs/cases/README.md` 一行、`plugins/surfcore/README.md`「好感度」一节。
+
+**case**：`docs/cases/2026-11-02-favor.md`
+**注意**：改桥接要重启桥接进程（PITFALLS #25）；换人格不继承关系值（PITFALLS #29）；
+分档表在 `src/favor.js` 与 `plugins/surfcore/lib/index.js` 各一份，改一处要改两处。
+
+**交接块（可直接转发给发布会话）**：
+
+```text
+发布：好感度 v1。范围 = bbec146 之上的工作区（含在途的表情本地读盘改动）。
+新增 src/favor.js、scripts/test-favor.mjs、plugins/surfcore/scripts/test-favor-api.mjs、
+docs/cases/2026-11-02-favor.md；改 src/bridge.js、plugins/surfcore/lib/{index,client}.js、
+plugins/surfcore/README.md、docs/cases/README.md、package.json、docs/RELEASE-QUEUE.md。
+验证：npm run test:favor && node plugins/surfcore/scripts/test-favor-api.mjs。
+发布后用户需要：重启桥接进程 + 重启 DSH（设置页才会出现「好感度」标签）。
+```
+
+### 待发布 · 2026-11-02 · 读法（思维链式消息防抖）
+<!-- release-batch: start=2026-11-02T19:20+08:00 end=2026-11-02T19:45+08:00 commits=bbec146 + 工作区未提交 -->
+
+**与上一批（好感度）同一工作区、同一会话产出，一起发布即可**；建议仍在 0.9.0 里。
+
+- 新增 `src/think.js`（`normalizeThinkConfig` / `thinkStyleOf` / `buildThinkBlock` / `thinkSnapshot`，纯函数）；
+- `src/bridge.js`：import `buildThinkBlock`；`antiAiLine` 之后算 `thinkLine`，`base` 串插在
+  `antiAiLine + thinkLine + proactiveLine`，`lastWakePromptMeta` 补 `think`；
+- 测试：`scripts/test-think.mjs`（10 组），`package.json` 注册 `test:think`；
+- 测试夹具：`scripts/audit-bridge-harness.mjs` 注入 `...favor` / `...think` 与 favor 的五个别名
+  （`emptyFavorStore`/`decayFavor`/`normalizeFavorStore`/`observeFavorMessage`/`buildFavorPromptBlock`）；
+- 文档：`docs/cases/2026-11-02-think.md`、`docs/cases/README.md`、`plugins/surfcore/README.md`「读法」一节。
+- 配置：`socialV2.think`（默认开，不用手写配置）。
+
+**验证**：`npm run test:think && node --check src/bridge.js`
+**生效**：重启桥接进程（PITFALLS #25）。**回滚**：`socialV2.think.enabled=false`，代码不用动。
+
+```text
+发布：读法（消息防抖）v1，和好感度同批。新增 src/think.js、scripts/test-think.mjs、
+docs/cases/2026-11-02-think.md；改 src/bridge.js、scripts/audit-bridge-harness.mjs（补 favor/think 注入与别名）、
+package.json、plugins/surfcore/README.md、docs/cases/README.md、docs/RELEASE-QUEUE.md。验证：npm run test:think。
+发布后：重启桥接进程即生效（设置页无新标签）。
+```
+
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
 
