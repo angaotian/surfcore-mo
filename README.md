@@ -14,18 +14,48 @@
 > | 本仓库 | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro)（维护者 `angaotian`） |
 > | 显示版本 | `0.8.9-pro`（`package.json` 的 `version` 仍写 `0.8.9`，因为更新校验比对的是上游版本号） |
 >
-> **本仓库在上游 v0.8.9 之上追加了这些上游没有的功能**（纯上游请直接去上游仓库）：
->
-> - 关系系统 `favor`（好感 + 亲密两轴、阶段、确定性打分）
-> - 思维链式读法 `think`（先要点 → 总体判断 → 未决问题）
-> - 主动开口闸门 `outreach`（能不能出声、上次出声有没有人接）
-> - 表情包管理器 `meme-pack`（兼容 AstroBot `meme_manager` 目录格式）
-> - 联网检索第一跳 **Anysearch**（`auto` 四跳：Anysearch → DeepSeek Search API → DeepSeek 模型 → Bing）
-> - 独立控制台页（`public/console.html`，按 `providerGroups` 嵌套清单展示）
-> - 安全版 QQ MCP server（`src/mcp-snowluma-safe.js`，发送前强制校验白名单）
->
+> **上游没有的追加功能 7 项、改动过的上游行为 7 处**——逐条列在下面的「多了什么」一节。
 > 上游 v0.8.9 的能力（向量记忆全链路、会话滚动、唤醒过滤、出站队列、跟随 DSH 默认模型等）**全部保留**。
 > 逐文件对照（本地新增 / 本地改过的上游文件）与合并方式见 **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**。
+
+## 📦 相比上游 v0.8.9，到底多了什么
+
+> 相对上游 `0ce8580`：**18 个提交 / 68 个文件 / +11447 −3466**，其中 **26 个文件是新增**。
+
+### A. 上游没有的新功能（7 项）
+
+| 功能 | 多了什么 | 在哪用 / 怎么开 | 自测 |
+| --- | --- | --- | --- |
+| **关系系统 favor** | 两条轴：好感（喜不喜欢）＋亲密（有多熟），各 0–100；阶段「生疏 → 熟识 → 亲近 → 默契」要**同时**过分门槛和亲密门槛；掉档要连续 7 天低于阈值才降一档；打分是确定性规则（可解释），不是模型随意给分 | 设置页 **「好感度」Tab**（只读，看分数/阶段/事件流）；数据在 `state/favor/<角色>.json`；开关 `favor.enabled`、`favor.intimacyEnabled` | `node scripts/test-favor.mjs` |
+| **think 思维链读法** | 被消息叫醒时先想三遍再回：逐条要点 → 总体判断 → 未决问题；多人对话不容易答错人、漏问题 | 设置页 **「思考与读法」**：启用开关 / 风格 `auto·brief·chatty·dry` / 最多记几个要点 2–5；配置键 `socialV2.think` | `node scripts/test-think.mjs` |
+| **outreach 主动开口闸门** | 回答「现在能不能先开口」：只要上次开口之后有任何人说话，冷场链条就断，重新计数；超过上限就压住 | 自动生效。判定与理由记 `state/outreach-log.jsonl`（超 2MB 轮转），事后能查「昨晚为什么没说话」；配置 `socialV2.proactive` | `node scripts/test-outreach-gate.mjs` |
+| **meme-pack 表情包管理器** | 兼容 AstroBot「表情包管理器 meme_manager」目录格式：`manifest.json` / `memes_data.json` / `memes/` / 可选 `semantic_metadata.json`；一个包整套导入 | 包放 `state/sticker-files/<包名>/`；插件路由 `/dsh-surfcore/api/sticker-pack/import`、桥接 `POST /api/socialV2/sticker-import` | `node scripts/test-meme-pack.mjs`<br>`node scripts/test-meme-pack-import.mjs` |
+| **Anysearch 检索第一跳** | 联网检索 `auto` 变成**四跳**：Anysearch → DeepSeek Search API → DeepSeek 模型轮次 → Bing（实测 Anysearch 命中率与延迟最好） | 设置页 → 联网搜索 → Anysearch：开关 / endpoint / `ANYSEARCH_API_KEY` / freshness / contentTypes（`webSearch.anysearch`） | `node scripts/test-media-search.mjs` |
+| **独立控制台页** | 不依赖 QQ 桥接事件的浏览器页面，能单独看模型/状态；模型目录按「提供方 → 模型」嵌套展示 | 浏览器开 `http://127.0.0.1:3100/?token=<consoleToken>`（端口 `consolePort`） | `node scripts/test-console-ui.mjs`（需 Playwright） |
+| **安全版 QQ MCP server** | `src/mcp-snowluma-safe.js`：只暴露聊天所需的 **30 个** `qq_*` 工具，没有文件/进程等危险面；**发送前强制校验** `allow.groups` / `allow.private`，白名单外直接拒 | 由 `scripts/setup-dsh.mjs` 写进 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `# === qq-bridge MCP BEGIN ===` 块 | `node scripts/test-audit-bridge.mjs` |
+
+### B. 改了上游已有做法的地方（不是新增，是换了做法）
+
+| 位置 | 上游 v0.8.9 | 本仓库 | 为什么这么改 |
+| --- | --- | --- | --- |
+| `POST /api/dsh/model` | 与本地版本**重复定义了两套**处理器 | 只留一套（本地宽松版），错误码沿用上游 `MODEL_REQUIRED` / `MODEL_INVALID` / `MODEL_EFFORT_INVALID` / `MODEL_NOT_FOUND` | 两套同路径处理器，后定义的会盖掉先定义的，行为不可预测 |
+| `GET /api/dsh/model` | 只回扁平 `providers` | 同时回扁平 `providers`（插件卡片用）**和**嵌套 `providerGroups`（独立控制台用），另加 `catalogAvailable` | 两种消费者要的形态不同，不能只满足一个 |
+| `auto` 联网检索顺序 | 三跳 | 四跳，**Anysearch 第一跳** | 见 A 表第 5 行 |
+| 图片能力提示 `warnings` | 只读模型目录声明 | 按 `socialV2.vision.imageInput` 的 `auto / true / false` **分支出不同提示**，响应回生效值 `imageInput` + 档位 `visionImageInput` | 强制「支持图片输入」后还提示「按文字兜底更安全」，自相矛盾 |
+| `state/console-token` | 与 `config.json` 的 `consoleToken` **无同步** | 启动时按 config 生效值对齐写回（不一致才写，并记日志） | 两份令牌不一致时，直接读文件的老脚本（`send-voice`、`tag-stickers`、`test-console`）会一直 401 |
+| 预设 yml 第 16 条【发语音】 | — | 采用上游新文案：**以工具返回为准**，只有 `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` 才去设置页开，不再写死「语音默认关闭」 | 旧文案和实际能力不符，会让模型白白放弃发语音 |
+| 启动方式 | 只有 `start.bat` | 另带 `start-all.ps1`、`启动小鲸鱼.bat`（本机习惯的一键启动） | 顺手，不影响上游方式 |
+
+### C. 自己怎么核对
+
+```bash
+git remote -v                          # origin = 上游，mine = 本 fork
+git log --author=angaotian --oneline   # 18 个本地提交
+git diff --stat 0ce8580 HEAD           # 68 文件 / +11447 / -3466
+npm run test:audit                     # 全量 153/153
+npm run test:favor test:think test:outreach test:meme-pack   # 本地功能
+```
+
 
 > 一句话：**它不是"把大模型接进 QQ"的机器人框架，而是给模型一个身份、一套会遗忘的记忆、
 > 一份作息、两只手（QQ / B站）和一个能坐在你桌面上的分身。**

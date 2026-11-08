@@ -13,19 +13,48 @@
 > | This repo | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro) — maintainer `angaotian` |
 > | Displayed version | `0.8.9-pro` (`package.json` `version` stays `0.8.9`, because update checks compare upstream version numbers) |
 >
-> **Added here on top of upstream v0.8.9 (upstream does NOT have these):**
->
-> - `favor` relationship system (affection + intimacy axes, stages, deterministic scoring)
-> - `think` chain-of-thought reading (points → overall judgement → open questions)
-> - proactive-outreach gate (may it speak, did anyone answer last time)
-> - `meme-pack` manager (reads AstroBot `meme_manager` directory format)
-> - **Anysearch** as the first search hop (`auto` = Anysearch → DeepSeek Search API → DeepSeek model → Bing)
-> - standalone console page (`public/console.html`, reads the nested `providerGroups` list)
-> - hardened QQ MCP server (`src/mcp-snowluma-safe.js`, whitelist-checked before sending)
->
-> Everything upstream v0.8.9 ships (vector memory, session rollover, wake filtering, outbox,
-> following the DSH default model, …) is **kept**. Per-file comparison and how the merge was done:
-> **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
+> **Added on top of upstream v0.8.9: 7 features upstream does not have, plus 7 upstream behaviours changed.**
+> Both are listed in the "What's extra" section right below. Everything upstream v0.8.9 ships
+> (vector memory, session rollover, wake filtering, outbox, following the DSH default model, …) is **kept**.
+> Per-file comparison and how the merge was done: **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
+
+## 📦 What's extra compared to upstream v0.8.9
+
+> Against upstream `0ce8580`: **18 commits / 68 files / +11447 −3466**, of which **26 files are new**.
+
+### A. Features upstream does not have (7)
+
+| Feature | What it adds | Where / how to use | Self-test |
+| --- | --- | --- | --- |
+| **`favor` relationship system** | Two axes — affection (does it like you) and intimacy (how close) — 0–100 each; stages 生疏 → 熟识 → 亲近 → 默契 require **both** a score gate and an intimacy gate; a stage only drops after 7 consecutive days under the threshold; scoring is deterministic and explainable instead of model whim | Settings → **"好感度" (favor) tab**, read-only (scores, stage, event stream); data in `state/favor/<role>.json`; toggles `favor.enabled`, `favor.intimacyEnabled` | `node scripts/test-favor.mjs` |
+| **`think` chain-of-thought reading** | Before replying it thinks three passes: per-message points → overall judgement → open questions; fewer wrong-person replies and missed questions in busy groups | Settings → **"思考与读法" (think)**: enable / style `auto·brief·chatty·dry` / max points 2–5; config key `socialV2.think` | `node scripts/test-think.mjs` |
+| **Proactive-outreach gate** | Decides whether it may speak up now: **any** inbound message after its last utterance resets the cold-streak, and an upper bound suppresses it | Always on. Decisions and reasons go to `state/outreach-log.jsonl` (rotated at 2 MB) so you can answer "why did it stay silent last night"; config `socialV2.proactive` | `node scripts/test-outreach-gate.mjs` |
+| **`meme-pack` manager** | Reads the AstroBot "表情包管理器 / meme_manager" directory format (`manifest.json` / `memes_data.json` / `memes/` / optional `semantic_metadata.json`) and imports a whole pack at once | Packs live in `state/sticker-files/<pack>/`; plugin route `/dsh-surfcore/api/sticker-pack/import`, bridge `POST /api/socialV2/sticker-import` | `node scripts/test-meme-pack.mjs`<br>`node scripts/test-meme-pack-import.mjs` |
+| **Anysearch as first search hop** | `auto` web search becomes **four hops**: Anysearch → DeepSeek Search API → DeepSeek model turn → Bing | Settings → web search → Anysearch: enable / endpoint / `ANYSEARCH_API_KEY` / freshness / contentTypes (`webSearch.anysearch`) | `node scripts/test-media-search.mjs` |
+| **Standalone console page** | A browser page that does not depend on QQ bridge events; renders the model catalogue as provider → model | Open `http://127.0.0.1:3100/?token=<consoleToken>` (port `consolePort`) | `node scripts/test-console-ui.mjs` (needs Playwright) |
+| **Hardened QQ MCP server** | `src/mcp-snowluma-safe.js` exposes only the **30** chat-related `qq_*` tools — no filesystem/process surface — and **checks `allow.groups` / `allow.private` before every send**, refusing anything outside the whitelist | Written into `~/.dsh/profiles/desktop/cordis.patch.yml` (the `# === qq-bridge MCP BEGIN ===` block) by `scripts/setup-dsh.mjs` | `node scripts/test-audit-bridge.mjs` |
+
+### B. Upstream behaviours changed (not additions — different approaches)
+
+| Where | Upstream v0.8.9 | This repo | Why |
+| --- | --- | --- | --- |
+| `POST /api/dsh/model` | **Two** handler definitions (upstream's and the local one) | One handler (the lenient local one), keeping upstream error codes `MODEL_REQUIRED` / `MODEL_INVALID` / `MODEL_EFFORT_INVALID` / `MODEL_NOT_FOUND` | Two handlers on one path means the later definition silently wins |
+| `GET /api/dsh/model` | Flat `providers` only | Flat `providers` (plugin cards) **and** nested `providerGroups` (console) plus `catalogAvailable` | Two consumers need two shapes |
+| `auto` search order | Three hops | Four hops, **Anysearch first** | Measured better hit rate / latency |
+| Image-capability `warnings` | Read the catalogue only | Branches on `socialV2.vision.imageInput` = `auto / true / false`, and returns the effective `imageInput` + `visionImageInput` | Forcing "supports images" while still warning "falling back to text" is self-contradictory |
+| `state/console-token` | Never synced with `config.json`'s `consoleToken` | Aligned to the effective config value at startup (written only when they differ, logged) | When they diverge, scripts that read the file (`send-voice`, `tag-stickers`, `test-console`) get 401 forever |
+| Preset yml entry 16 【发语音】 | — | Uses the new upstream wording: decide from the tool's return value; only `VOICE_DISABLED` / `VOICE_TOOL_DISABLED` mean "go enable it" | The old wording claimed voice was off by default |
+| Launch scripts | `start.bat` only | Also `start-all.ps1` and `启动小鲸鱼.bat` | Local convenience; upstream path untouched |
+
+### C. Verify it yourself
+
+```bash
+git remote -v                          # origin = upstream, mine = this fork
+git log --author=angaotian --oneline   # 18 local commits
+git diff --stat 0ce8580 HEAD           # 68 files / +11447 / -3466
+npm run test:audit                     # 153/153
+```
+
 
 > ℹ️ This English page is a **condensed overview**. The full, code-level documentation
 > (architecture, every module, voice / pet / Bilibili subsystems, configuration and state files,
