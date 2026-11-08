@@ -530,6 +530,33 @@ try {
     await page.waitForFunction(() => document.getElementById('roleInjectMaxMsg').textContent.includes('6000'));
   });
 
+  if (!original) await test('模型切换：两个下拉来自 DSH 模型目录、切提供方跟着换模型、可保存并写回', async () => {
+    await navigate('overview');
+    await page.waitForFunction(() => document.getElementById('dshProviderSelect').options.length > 0);
+    const providers = await page.locator('#dshProviderSelect option').evaluateAll((nodes) => nodes.map((n) => n.value));
+    assert.deepEqual(providers, ['deepseek-official', 'fox-api-deepseek'], `提供方应来自 DSH 模型目录，实际 ${providers.join(',')}`);
+    assert.equal(await page.locator('#dshProviderSelect').inputValue(), 'deepseek-official');
+    assert.equal(await page.locator('#dshModelSelect').inputValue(), 'deepseek-flash');
+    // 切提供方 → 模型下拉跟着换（两边的模型 id 不通用，不能留旧值）
+    await page.locator('#dshProviderSelect').selectOption('fox-api-deepseek');
+    await page.waitForFunction(() => document.getElementById('dshModelSelect').value === 'deepseek-v4.1-flash-1017');
+    assert.match(await page.locator('#dshModelMsg').textContent(), /已切到 fox-api-deepseek/);
+    const [saved] = await Promise.all([
+      page.waitForResponse(r => new URL(r.url()).pathname === '/api/dsh/model' && r.request().method() === 'POST'),
+      page.locator('#dshModelSave').click(),
+    ]);
+    assert.equal(saved.status(), 200);
+    const payload = await saved.json();
+    assert.equal(payload.provider, 'fox-api-deepseek');
+    assert.equal(payload.model, 'deepseek-v4.1-flash-1017');
+    // 保存后卡片会重新拉一次接口（异步），等它反映新值，别读旧文本
+    await page.waitForFunction(() => document.getElementById('dshModelText').textContent.includes('deepseek-v4.1-flash-1017'));
+    // 改回去，避免影响后续断言
+    await page.locator('#dshProviderSelect').selectOption('deepseek-official');
+    await page.locator('#dshModelSave').click();
+    await page.waitForFunction(() => document.getElementById('dshModelText').textContent.includes('deepseek-flash'));
+  });
+
   if (!original) await test('思考强度：档位来自 DSH、默认 max、可切换并明示全局副作用', async () => {
     await navigate('overview');
     await page.waitForFunction(() => document.getElementById('dshEffortSelect').options.length > 0);

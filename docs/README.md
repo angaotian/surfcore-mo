@@ -30,6 +30,7 @@
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
 | [guides/MEMORY_CARD.md](guides/MEMORY_CARD.md) | **记忆卡设计与使用**：衰减卡 vs 全量卡、重要度评分、「最初」30 天概率与初次相遇指定、清晰度/遗忘、80/90/100% 容量告警、压缩、全量存档/召回、隐私 scope、配置/API/验证 | ✅ 2026-10-22 新增 |
+| [guides/RELATIONSHIP.md](guides/RELATIONSHIP.md) | **关系系统 v2（好感 + 亲密双轴 + 四阶段）**：探针定带与按档称重、升级要过亲密门槛、7 天降档迟滞、亲密软顶、v1→v2 迁移；心情（P1）与印象句（P2）仍待做；附「参考 AstrBot EmotionAI Pro 4.2.9 的抄与不抄」 | ✅ P0 已实施 2026-11-02（见 [case](../cases/2026-11-02-favor.md)） |
 | [guides/CHARACTER_PERSONA.md](guides/CHARACTER_PERSONA.md) | **角色人格系统**：每角色目录包（人格卡 + 记忆卡 + B站行为账本）、切换序列与隔离矩阵、12 槽自动存档/回档、旧数据迁移、API、已知边界 | ✅ 2026-10-23 新增 |
 | [guides/CROSS_PLATFORM_IDENTITY.md](guides/CROSS_PLATFORM_IDENTITY.md) | **跨平台自我识别与来源判断**：为什么转发记录会被说成 B站 内容、自我卡（昵称/ID/主页/人格名）、标签与规则双写、隐私打码、以后接贴吧照做的四条策略、验收用例 | ✅ 2026-10-23 新增 |
 | [guides/PURPOSE_OUTREACH.md](guides/PURPOSE_OUTREACH.md) | **目的机制（主动找主人）**：从近期 QQ+B站 记忆提炼「目的」→ 定期搭话（分享🧀/索取）；**载体 QQ / 桌宠**（2026-10-25）与互斥/回落、排程与硬闸门、素材/候选/提示词、内部备忘与 pending、状态文件、API、配置、预览/试一次、验证与回滚 | ✅ 2026-10-25 更新 |

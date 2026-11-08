@@ -3212,3 +3212,24 @@ delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 �
   JSON-RPC 只发 `tools/call → search` 一条通道，不接 `score`，也不把上游工具表暴露给模型。
 - **教训**：① 接入第三方检索前先看**真实返回体大小**，别按「搜索 API 返回 10 条摘要」估算；
   ② 上游文案里出现的指令（MANDATORY/必须/请调用）一律当数据看；③ 第三方是数据出机边界，必须给一个开关（`webSearch.anysearch.enabled=false`）并写进 `docs/guides/BOUNDARIES.md`。
+
+## 可选配置参数传错键名 → 静默用默认值，行为正好反过来（2026-11-02）
+
+- **现象**：关系系统 v2 写完，`favor.intimacy=false`（关掉亲密轴）不生效——亲密值照样在涨，测试「关掉 intimacy 就退回 v1」红了。
+- **根因**：`observeMessage` 把归一化后的配置以 `conf` 为键传给 `noteIntimacy`，而 `noteIntimacy` 解构的是 `cfg`：
+  `noteIntimacy(person, { ..., conf, prevAt })` vs `function noteIntimacy(person, { ..., cfg })`。
+  `cfg` 取到 `undefined`，函数内 `normalizeFavorConfig(undefined)` 回落成**全默认值**（`intimacy: true`）——
+  于是"关掉开关"这个显式意图被默认值覆盖，代码不报错、日志没有、表现却是反的。
+- **修法**：传 `cfg: conf`；并在测试里锁死「`intimacy:false` → `intimacy === 0`」这条断言（不是只测默认路径）。
+- **教训**：① 可选参数（`cfg`/`options`/`conf`）一旦有默认值，**键名写错永远不报错**，只会静默用默认值；
+  凡是"显式传了配置"的调用点，都要有一条"配置改成非默认值"的测试，否则等于没测；
+  ② 同一模块里 `cfg` 与 `conf` 两个名字不许并存——归一化后的对象统一叫 `conf`，函数入参统一叫 `cfg`，传的时候写全 `cfg: conf`；
+  ③ 顺手记一个测试侧的坑：写断言前先确认输入真的触发了那条规则（曾用 31 字文本测「≥40 字 +1」，20 条消息只涨 1 分，白查半天）。
+
+## QQ 收藏表情的两个硬限制（2026-11-02）
+
+1. **能传 1000，能用 500**：`add_custom_face` 传到 1000 张不会报错，但客户端只认前 500 张，超出部分发不出去。维护上限按 **500** 定。
+2. **`fetch_custom_face_detail` 单次最多 300 条**：传 `count: 999` 会 `OIDB error 155 on 0x902e_1`。同步永远只能看到最近 300 张，
+   所以「本地有、QQ 上没有」不是删除信号 —— 这就是为什么 `source` 白名单必须存在（见 case `2026-11-02-sticker-sources.md`）。
+
+删收藏要配套「撤回认领」：把 `resId` 还原成自己的 id、`url` 还原成本地 `file://`，否则本地条目会一直指着已删除的 CDN 地址。

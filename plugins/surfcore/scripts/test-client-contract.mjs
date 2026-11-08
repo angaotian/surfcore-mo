@@ -447,4 +447,22 @@ assert.ok(source.includes('updatePromptSignature'), '按版本集合生成提醒
 assert.ok(source.includes('neverStarted'), '未启动（everConnected=false）也要过滤旧断线告警');
 assert.ok(source.includes('sl.everConnected === false'), '按 everConnected 判断“从未启动”');
 
+// ── 切换模型做进 SurfCore 设置页（2026-11-03 用户要求：不要网站版，做进插件页）──
+//   · QQ 页顶部一张「DSH 模型」卡：提供方 / 模型 / 思考强度三个下拉 + 保存；
+//   · 走插件 /model 代理桥接 /api/dsh/model，保存即写 config.json 并热生效（不用重启桥接）；
+//   · 页面自己给出「当前用哪个」，桥接没在跑时明确说先启动桥接，而不是报个 5xx。
+assert.ok(source.includes('function ModelSwitchCard'), '缺少「DSH 模型」切换卡片');
+assert.ok(source.includes('h(ModelSwitchCard, { cfg, set, toast })'), 'QQ 页没有渲染模型切换卡片');
+for (const label of ['"提供方"', '"模型"', '"思考强度"', '"保存模型"']) {
+  assert.ok(source.includes(label), `模型卡片缺少 ${label}`);
+}
+assert.ok(source.includes('api("/model")'), '模型卡片没有读取 /model');
+assert.ok(source.includes('api("/model", { method: "POST"'), '模型卡片没有保存到 /model');
+assert.ok(source.includes('set(["dsh", "provider"], r.provider)'), '保存后要把提供方同步回设置表单');
+assert.ok(source.includes('set(["dsh", "model"], r.model)'), '保存后要把模型同步回设置表单');
+assert.ok(pluginIndexSource.includes('async function handleModel(req, res)'), '插件缺少 handleModel');
+assert.ok(pluginIndexSource.includes('`${API_PREFIX}/model`'), '插件缺少 /model 路由');
+assert.ok(pluginIndexSource.includes("callBridge('/api/dsh/model'"), '插件 /model 不是代理到桥接的 /api/dsh/model');
+assert.ok(pluginIndexSource.includes('先启动 QQ 桥接，再回来切换模型。'), '桥接没跑时要给出可操作提示');
+
 console.log('client contract tests OK');

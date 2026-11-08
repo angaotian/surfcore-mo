@@ -1,0 +1,36 @@
+=== SurfCore 诊断报告 ===
+生成时间：2026/11/1 11:16:38
+系统：win32 10.0.26300 (x64)
+Node：v24.21.0
+DSH_HOME：E:\DSH-Data\home
+安装目录：C:\Users\Administrator\surfcore\dist\installer\surfcore
+
+--- DSH ---
+profiles：desktop
+  desktop: bundle=surfcore / patch=有
+
+--- SnowLuma ---
+监听端口：(没有：SnowLuma 没开或没登录)
+SnowLuma 安装目录：snowluma-token.txt
+
+--- 依赖 ---
+node_modules：不存在
+express：没有
+@snowluma/sdk：没有
+
+--- 配置 ---
+config.json：不存在
+
+--- 插件日志（最后 12 行）---
+[2026-11-01T02:36:52.807Z] [updates] 检查完成：0 个组件有更新
+[2026-11-01T02:43:41.034Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-01T02:43:41.545Z] autoStartBridge 结果： 桥接已启动
+[2026-11-01T02:47:40.905Z] 记忆卡已整理：新增 B站 0 条 / QQ 1 条，当前 0.6%（347/0 字）
+[2026-11-01T02:47:41.042Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-01T02:47:41.550Z] autoStartBridge 结果： 桥接已启动
+[2026-11-01T02:59:41.107Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-01T02:59:41.623Z] autoStartBridge 结果： 桥接已启动
+[2026-11-01T03:03:41.119Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-01T03:03:41.637Z] autoStartBridge 结果： 桥接已启动
+[2026-11-01T03:11:41.144Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-01T03:11:41.656Z] autoStartBridge 结果： 桥接已启动

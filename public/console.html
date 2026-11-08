@@ -2565,13 +2565,22 @@ button:active:not(:disabled) {
     </section>
 <section id="section-dsh" data-page="overview" class="card span-all">
       <h2 data-note="下一条消息生效">DSH 模型与思考强度</h2>
-      <div class="meta">模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
+      <div class="meta">当前模型：<span id="dshModelText">-</span> ｜ 提供方：<span id="dshProviderText">-</span></div>
+      <div class="row" style="margin-top:10px">
+        <label style="flex:0 0 auto">提供方</label>
+        <select id="dshProviderSelect" style="flex:0 1 220px"></select>
+        <label style="flex:0 0 auto">模型</label>
+        <select id="dshModelSelect" style="flex:0 1 280px"></select>
+        <button id="dshModelSave">保存模型</button>
+        <span class="meta" id="dshModelMsg"></span>
+      </div>
       <div class="row" style="margin-top:10px">
         <label style="flex:0 0 auto">思考强度</label>
         <select id="dshEffortSelect" style="flex:0 1 220px"></select>
         <button id="dshEffortSave">保存</button>
         <span class="meta" id="dshEffortMsg"></span>
       </div>
+      <div class="meta" id="dshModelNote"></div>
       <div class="meta" id="dshEffortNote"></div>
       <div class="meta" id="dshEffortSideEffect"></div>
     </section>
@@ -3049,6 +3058,38 @@ async function refreshSimPrompt() {
 }
 
 // ── DSH 模型与思考强度 ──────────────────────────────────────────────────────
+// 目录里的「提供方 → 模型」清单（GET /api/dsh/model 的 providers）。
+// 缓存在函数外：切换提供方时要靠它重建模型下拉，不必再拉一次接口。
+let dshProviders = [];
+
+// 提供方/模型在选项里的显示：名字和 id 不一样就都写上（"DeepSeek 官方（deepseek-account）"），
+// 一样就只写一个，避免出现 "deepseek-flash（deepseek-flash）" 这种废话。
+function dshOptionLabel(entry, id) {
+  return entry.name && entry.name !== id ? `${entry.name}（${id}）` : id;
+}
+
+// 按当前选中的提供方重建模型下拉。modelId 为空表示「这个提供方下就选第一个」。
+function fillDshModelSelect(providerId, modelId) {
+  const select = document.getElementById('dshModelSelect');
+  const group = dshProviders.find((g) => g.id === providerId);
+  select.replaceChildren();
+  if (!group) { select.disabled = true; return ''; }
+  select.disabled = false;
+  for (const entry of group.models) {
+    const el = document.createElement('option');
+    el.value = entry.id;
+    el.textContent = dshOptionLabel(entry, entry.id);
+    const tips = [];
+    if (entry.efforts && entry.efforts.length) tips.push(`支持的思考档位：${entry.efforts.join(' / ')}`);
+    if (entry.defaultEffort) tips.push(`该模型的默认档：${entry.defaultEffort}`);
+    if (tips.length) el.title = tips.join('；');
+    select.appendChild(el);
+  }
+  if (modelId && group.models.some((m) => m.id === modelId)) select.value = modelId;
+  else if (select.options.length) select.selectedIndex = 0;
+  return select.value;
+}
+
 async function refreshDshModel() {
   try {
     const r = await api('/api/dsh/model');
@@ -3075,6 +3116,34 @@ async function refreshDshModel() {
       ? '注意：切换会同时写入 DSH 的全局默认（~/.dsh/settings.yaml 的 agent-default-model），也就是 Web GUI 里新建会话的默认强度也会跟着变。'
       : '';
     document.getElementById('dshEffortMsg').textContent = '';
+
+    // ── 模型切换下拉 ──
+    dshProviders = Array.isArray(r.providers) ? r.providers : [];
+    const pSelect = document.getElementById('dshProviderSelect');
+    pSelect.replaceChildren();
+    for (const group of dshProviders) {
+      const el = document.createElement('option');
+      el.value = group.id;
+      el.textContent = dshOptionLabel(group, group.id);
+      pSelect.appendChild(el);
+    }
+    // config.json 里的提供方不在目录里（手填过、或 DSH 没公布它）时补一个占位项：
+    // 这里要显示的是「实际在用什么」，而不是悄悄跳到列表第一项骗人。
+    if (r.provider && !dshProviders.some((g) => g.id === r.provider)) {
+      const el = document.createElement('option');
+      el.value = r.provider;
+      el.textContent = `${r.provider}（不在 DSH 目录里）`;
+      pSelect.appendChild(el);
+    }
+    pSelect.value = r.provider || '';
+    pSelect.disabled = !dshProviders.length;
+    fillDshModelSelect(pSelect.value, r.model);
+    const noteParts = [dshProviders.length
+      ? '提供方与模型来自 DSH 公布的模型目录；保存后写入 config.json，已在运行的 QQ 会话在下一条消息重新绑定，不用重启桥接。新模型不支持当前思考档位时会自动落到它公布的默认档。'
+      : '读不到 DSH 的模型目录（DSH 没启动，或版本不支持 session/modelCatalog）：这里只显示当前值，改模型请编辑 config.json 后重启桥接。'];
+    if (r.globalSideEffect) noteParts.push('注意：绑定模型会同时写 DSH 的全局默认（~/.dsh/settings.yaml 的 agent-default-model），Web GUI 新建会话的默认模型也会跟着变。');
+    document.getElementById('dshModelNote').textContent = noteParts.join('');
+    document.getElementById('dshModelMsg').textContent = '';
   } catch (error) {
     document.getElementById('dshEffortMsg').textContent = '读取失败：' + (error?.message ?? error);
   }
@@ -3241,6 +3310,31 @@ document.getElementById('roleInjectMaxSave').addEventListener('click', async () 
   msg.textContent = r.ok ? `✅ 已设为 ${r.maxInjectChars} 字符，下一条消息生效` : ('❌ ' + (r.error || '保存失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
   if (r.ok) refreshRoles();
+});
+
+// ── DSH 模型切换 ────────────────────────────────────────────────────────────
+document.getElementById('dshProviderSelect').addEventListener('change', () => {
+  const provider = document.getElementById('dshProviderSelect').value;
+  const msg = document.getElementById('dshModelMsg');
+  // 换提供方时把模型下拉一起换掉：跨提供方的模型 id 不通用，留着旧值只会让人点保存后拿到 400。
+  const next = fillDshModelSelect(provider, '');
+  msg.textContent = next ? `已切到 ${provider}，模型默认选 ${next}；确认后再点「保存模型」。` : '';
+  msg.className = 'meta';
+});
+document.getElementById('dshModelSave').addEventListener('click', async () => {
+  const provider = document.getElementById('dshProviderSelect').value;
+  const model = document.getElementById('dshModelSelect').value;
+  const msg = document.getElementById('dshModelMsg');
+  if (!provider || !model) { msg.textContent = '请先选择提供方与模型'; msg.className = 'meta err'; return; }
+  msg.textContent = '保存中…';
+  msg.className = 'meta';
+  const r = await api('/api/dsh/model', 'POST', { provider, model });
+  if (!r.ok) { msg.textContent = '❌ ' + (r.error || '保存失败'); msg.className = 'meta err'; return; }
+  msg.textContent = `✅ 已设为 ${r.provider}/${r.model}，下一条消息生效`
+    + (r.effortAdjusted ? `（新模型不支持原档位，思考强度已调整为 ${r.reasoningEffort}）` : '')
+    + (r.catalogChecked === false ? '（没读到 DSH 模型目录，模型名未经校验）' : '');
+  msg.className = 'meta ok';
+  refreshDshModel();
 });
 
 // ── DSH 思考强度 ────────────────────────────────────────────────────────────

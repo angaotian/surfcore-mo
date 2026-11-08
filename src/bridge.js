@@ -43,9 +43,13 @@ import {
 import {
   analyzePersona, applyPurposeOutcome, buildPurposePrompt, collectMaterials, deriveDrives,
   ensurePurposeDay, ensurePurposeSchedule, evaluatePurposeTick, formGoalHypotheses,
-  markPurposeDelivered, markPurposeSkip, minePurposeSeeds, normalizePurposeConfig,
-  normalizePurposeState, parsePurposeMemo, planNextFire, selectPurpose, summarizePurposeState,
+  markPurposeDelivered, markPurposeSkip, minePurposeSeeds,
+  normalizePurposeConfig, normalizePurposeState, parseClock, parsePurposeMemo, planNextFire,
+  selectPurpose, summarizePurposeState,
 } from './purpose-engine.js';
+import {
+  effectiveUnanswered as effectiveProactiveUnanswered, markProactiveFired, outreachGate as outreachGateCore,
+} from './outreach-gate.js';
 import { resolvePriceTable } from './model-prices.js';
 import {
   DEFAULT_QQ_FISH_GUARD, appendFishGuardTrigger, assessFishDensity, fishGuardPromptLine, fishGuardReasonText,
@@ -73,8 +77,18 @@ import {
 } from './token-budget.js';
 import { createBiliMemory } from './bili-memory.js';
 import {
-  appendMemoryInboxEvent, looksNoteworthyMessage, resolveMemoryCardPaths,
+  appendMemoryInboxEvent, detectEmotionScore, looksNoteworthyMessage, resolveMemoryCardPaths,
 } from './memory-card.js';
+import {
+  decay as decayFavor,
+  emptyStore as emptyFavorStore,
+  favorFileName,
+  normalizeFavorConfig,
+  normalizeStore as normalizeFavorStore,
+  observeMessage as observeFavorMessage,
+  promptBlock as buildFavorPromptBlock,
+} from './favor.js';
+import { buildThinkBlock } from './think.js';
 import {
   activeMemoryPaths, activePersonaFile, activePlatformStateDir, characterPaths, readCurrentCharacter,
   readPersonaLayerText,
@@ -121,6 +135,7 @@ import {
   ensureStickerIndex,
   rankStickers
 } from './sticker-semantics.js';
+import { importMemePackDir as importPackDir } from './meme-pack-import.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -135,6 +150,8 @@ const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');const SOCI
 // 单独一个文件：它属于操作者配置，不能随 social-v2.json 的会话状态一起被重置清掉。
 const INITIAL_PROMPTS_FILE = path.join(STATE_DIR, 'initial-prompts.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
+// 好感度按角色分文件：换人格卡不能继承上一个角色的关系值（PITFALLS #29 同款事故）。
+const FAVOR_DIR = path.join(STATE_DIR, 'favor');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
 const TOOL_LOG_FILE = path.join(STATE_DIR, 'tool-calls.jsonl');
 const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
@@ -920,6 +937,7 @@ function loadConfig() {
         setStickerRemark: false,
         stickerNote: true,
         collectSticker: true,
+        importStickers: true,
         getSelfImage: true,
         closeConversation: true
       },
@@ -999,7 +1017,15 @@ function loadConfig() {
         checkIntervalMinMs: 30 * 60 * 1000,
         checkIntervalMaxMs: 90 * 60 * 1000,
         idleThresholdMs: 15 * 60 * 1000,
-        probability: 0.3
+        probability: 0.3,
+        // 主动开口的安静时段（左闭右开，支持跨零点）。默认 00:30–08:00：
+        // 比私聊的 23:30 宽松一点，因为群里晚睡的人多。
+        quietStart: '00:30',
+        quietEnd: '08:00',
+        // 连续几次「主动开口没人接」之后开始退避；设 0 可关闭。
+        // soft=3：一天最多再主动 1 次；stop=5：当天封口（@/提问/私聊照常回）。
+        unansweredSoftLimit: 3,
+        unansweredStopLimit: 5
       },
       feedback: {
         maxLength: 500,
@@ -1851,6 +1877,8 @@ async function main() {
   // 「空库」写回去，把 AI 学到的 localNote/tags/usage 永久清零。读失败就显式降级为
   // 「只读不写」，并留下醒目日志（与 loadSlang 的 slangStoreWritable 同一套路）。
   let stickerEntries = [];
+// 「她自搜图入库」的时间戳（限流用；只在本进程内存里，重启即清零，和 collect 的心跳一致）。
+let stickerImportStamps = [];
   let stickerStoreWritable = true;
   try {
     stickerEntries = loadStickerStore(STICKER_FILE);
@@ -2479,7 +2507,18 @@ async function main() {
     const synced = await syncStickerLibrary(true);
     const entry = findSticker(synced?.entries ?? stickerEntries, stickerRef);
     if (!entry) throw new Error(`找不到表情 ${stickerRef}，请先用 qq_list_stickers 获取有效 id（也可以直接用编号 "#01" 发送）`);
-    const url = entry.url;
+    // 优先发本地文件：同步会把 url 改写成 QQ CDN，但本地既然有副本就没必要走网络
+    // （省一次下载、不受 safeFetch 内网封锁、CDN 挂了也不影响）。
+    const preferLocal = (() => {
+      const raw = String(entry.localUrl || '').trim();
+      if (!raw) return '';
+      try {
+        const p = /^file:\/\//i.test(raw) ? fileURLToPath(raw) : (path.isAbsolute(raw) ? raw : '');
+        if (p && fs.existsSync(p)) return raw;
+      } catch { /* 路径不合法就当没有本地副本 */ }
+      return '';
+    })();
+    const url = preferLocal || entry.url;
     if (!url) throw new Error(`表情 ${entry.id} 没有可发送的图片地址`);
     const [kind, id] = key.split(':');
     const segments = [];
@@ -2498,11 +2537,33 @@ async function main() {
       segments.push({ type: 'at', data: { qq: at } });
     }
     // 在桥接内完成带 DNS 固定、逐跳校验和大小限制的下载；不能把 URL 交给网关重新抓取。
+    // 例外：本地图库表情（file:// 或绝对路径）直接读盘转 base64 —— 本机图不用经过网络，
+    // 也就绕开了 safeFetch 对内网/环回地址的封锁（表情库里的 memes 包就存在本地）。
     let image;
-    try {
-      image = await safeFetchBuffer(url, MAX_MEDIA_BYTES);
-    } catch (error) {
-      throw new Error(`表情 ${entry.id} 的图片下载失败（QQ CDN 网络异常或地址已失效）：${error?.message ?? error}`);
+    const localPath = (() => {
+      const raw = String(url || '');
+      if (/^file:\/\//i.test(raw)) {
+        try { return fileURLToPath(raw); } catch { return ''; }
+      }
+      return path.isAbsolute(raw) ? raw : '';
+    })();
+    if (localPath) {
+      try {
+        const buf = fs.readFileSync(localPath);
+        if (!buf.length) throw new Error('文件是空的');
+        if (buf.length > MAX_MEDIA_BYTES) throw new Error(`文件过大（${buf.length} 字节）`);
+        const ext = path.extname(localPath).toLowerCase();
+        const mime = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+        image = { buffer: buf, contentType: mime };
+      } catch (error) {
+        throw new Error(`表情 ${entry.id} 的本地图片读取失败（${localPath}）：${error?.message ?? error}`);
+      }
+    } else {
+      try {
+        image = await safeFetchBuffer(url, MAX_MEDIA_BYTES);
+      } catch (error) {
+        throw new Error(`表情 ${entry.id} 的图片下载失败（QQ CDN 网络异常或地址已失效）：${error?.message ?? error}`);
+      }
     }
     segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64') } });
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
@@ -2564,6 +2625,104 @@ async function main() {
     saveStickerStoreSafe();
     return updated.entry;
   }
+
+  // 从一个 AstroBot「表情包管理器」的资源包目录导入表情（2026-11-02）。
+  //
+  // 落盘细节（扫描/复制/去重/映射）在 src/meme-pack-import.js，那里能脱离桥接单测；
+  // 这里只做接线 + 「唯一写者」的保存：stickerEntries 是桥接内存里的权威副本，
+  // 写完立刻 saveStickerStoreSafe()，否则下一次收藏/备注落盘会把刚导入的条目覆盖掉（PITFALLS #14）。
+  function importMemePackDir(dir) {
+    const result = importPackDir(dir, {
+      stateDir: STATE_DIR,
+      entries: stickerEntries,
+      findSticker,
+      detectEmotions,
+      log,
+      onSave: (nextEntries) => {
+        stickerEntries = nextEntries;
+        // 导入完重建一次本地语义索引，新表情立刻能被【表情匹配】挑中。
+        try { ensureStickerIndex(stickerEntries); } catch { /* 索引失败不影响入库 */ }
+        saveStickerStoreSafe();
+      }
+    });
+    if (!result.ok) return result;
+    // 老条目补了 md5（导入时顺手算的）也要落盘，否则下次又要重算一遍。
+    if (result.repaired > 0 && result.added === 0) {
+      try { saveStickerStoreSafe(); } catch { /* 存不下就下次再补 */ }
+    }
+    const { entries: _entries, ...summary } = result;
+    return summary;
+  }
+
+  // 她「自己找一张表情存进来」（2026-11-02，配套 qq_sticker_import）。
+  //
+  // 为什么不让模型直接给图片数据：模型手里只有文字，能拿到的是**图片直链**。
+  // 所以这里负责：下载（safeFetchBuffer，拦内网/限大小）→ 确认是图（看 magic bytes）→
+  // md5 去重 → 复制进 state/sticker-files/agent/ → 造条目 → 立刻落盘。
+  // 失败一律返回 {ok:false, code, error, hint}，不静默吞（AGENTS 1.7）。
+  const STICKER_AGENT_DIR = 'agent';
+  async function importStickerFromUrlV2(rawUrl, { caption, keywords, emotion, tags } = {}) {
+    const target = String(rawUrl ?? '').trim();
+    if (!/^https?:\/\//i.test(target)) {
+      return { ok: false, code: 'STICKER_URL_SCHEME', error: `只接受 http(s) 图片直链：${target || '(空)'}`, hint: '先搜到图片本身的地址（.jpg/.png/.gif/.webp 结尾或图片 CDN 直链），不要给网页地址' };
+    }
+    let fetched;
+    try {
+      // safeFetchBuffer 自带 SSRF 防护 + 大小上限 + 「确实是图片」校验（PNG/JPEG/GIF/WebP），
+      // 失败会抛带原因的错，这里统一转成 code+hint 交给模型看。
+      fetched = await safeFetchBuffer(target, MAX_MEDIA_BYTES);
+    } catch (error) {
+      return { ok: false, code: 'STICKER_DOWNLOAD_FAILED', error: `下载失败：${error?.message ?? error}`, hint: '换一张图片直链；网页地址、防盗链、需要登录的链接都不行' };
+    }
+    const buf = fetched?.buffer;
+    if (!buf || !looksLikeImageBuffer(buf)) {
+      return { ok: false, code: 'STICKER_NOT_IMAGE', error: '下载到的不是图片（可能是网页/登录页/防盗链提示）', hint: '换一张图的直链；HTML 页面地址不行' };
+    }
+    const md5 = crypto.createHash('md5').update(buf).digest('hex');
+    const existing = stickerEntries.find((e) => String(e.md5 || '').toLowerCase() === md5);
+    if (existing) return { ok: true, duplicate: true, entry: existing };
+    const mime = mimeFromBuffer(buf) || 'image/jpeg';
+    const ext = mime === 'image/png' ? '.png' : mime === 'image/gif' ? '.gif' : mime === 'image/webp' ? '.webp' : '.jpg';
+    const destAbs = path.join(STATE_DIR, 'sticker-files', STICKER_AGENT_DIR, `${md5.slice(0, 16)}${ext}`);
+    try {
+      fs.mkdirSync(path.dirname(destAbs), { recursive: true });
+      fs.writeFileSync(destAbs, buf);
+    } catch (error) {
+      return { ok: false, code: 'STICKER_WRITE_FAILED', error: `保存图片失败：${error?.message ?? error}`, hint: '检查 state 目录是否可写、磁盘是否满了' };
+    }
+    const text = [caption, ...(Array.isArray(keywords) ? keywords : [])].filter(Boolean).join(' ');
+    const detected = text ? detectEmotions(text) : [];
+    const picked = String(emotion || '').trim() || (Array.isArray(detected) && detected[0]?.key) || 'neutral';
+    const id = `agent-${md5.slice(0, 16)}`;
+    const nextNo = stickerEntries.reduce((max, e) => Math.max(max, Number(e?.no) || 0), 0) + 1;
+    const now = new Date().toISOString();
+    const entry = {
+      id,
+      no: nextNo,
+      resId: id,
+      url: `file:///${destAbs.replace(/\\/g, '/')}`,
+      md5,
+      desc: String(caption || '').slice(0, 120),
+      localNote: '',
+      emotion: picked,
+      emotionAlt: [],
+      content: String(caption || '').slice(0, 120),
+      keywords: (Array.isArray(keywords) ? keywords : []).map(String).slice(0, 8),
+      tags: [...new Set([...(Array.isArray(tags) ? tags.map(String) : []), 'agent-import'])].slice(0, 6),
+      usage: '',
+      source: 'agent',
+      useCount: 0,
+      lastUsedAt: 0,
+      lastContext: '',
+      createdAt: now,
+      updatedAt: now
+    };
+    stickerEntries = [...stickerEntries, entry];
+    try { ensureStickerIndex(stickerEntries); } catch { /* 索引失败不影响入库 */ }
+    saveStickerStoreSafe();
+    return { ok: true, entry };
+  }
+
 
   // 给「刚到的消息」算一条表情推荐（编号 + 情绪 + 内容）。
   //
@@ -3083,6 +3242,47 @@ async function main() {
       return api.callUnary('session.models', {});
     }
   }
+
+  /**
+   * 把 DSH 的 `session/modelCatalog` 摊平成控制台能直接渲染的「提供方 → 模型」清单。
+   *
+   * 形状由 DSH 说了算（0.2.0：`{ default, routableProviders, groups, failures }`），
+   * 所以每个字段都做兜底读取：少个名字最多让下拉里显示的是一串 id，不会让整块界面变空。
+   * `routableProviders` 缺失/为空时按「不限制」处理（DSH 没公布就照 groups 全给），
+   * 否则只要 DSH 改一次这个字段的语义，控制台的下拉就会静默变成空的。
+   */
+  function describeModelProviders(catalog) {
+    const routable = new Set(
+      (Array.isArray(catalog?.routableProviders) ? catalog.routableProviders : [])
+        .map((p) => (typeof p === 'string' ? p : (p?.id ?? p?.provider ?? p?.name)))
+        .filter((id) => typeof id === 'string' && id),
+    );
+    const list = [];
+    for (const group of (Array.isArray(catalog?.groups) ? catalog.groups : [])) {
+      const id = String(group?.id ?? group?.provider ?? '');
+      if (!id) continue;
+      if (routable.size && !routable.has(id)) continue;
+      const models = [];
+      for (const entry of (Array.isArray(group?.models) ? group.models : [])) {
+        const modelId = String(entry?.id ?? '');
+        if (!modelId) continue;
+        models.push({
+          id: modelId,
+          name: String(entry?.name ?? entry?.label ?? modelId),
+          // 档位原样带上（含 'off' 这类控制台不提供的值）：切换模型时要判断
+          // 「新模型支不支持当前档位」，过滤太早会把判断依据丢掉。
+          efforts: (Array.isArray(entry?.reasoning?.efforts) ? entry.reasoning.efforts : [])
+            .map((e) => String(e?.id ?? ''))
+            .filter((x) => x),
+          defaultEffort: entry?.reasoning?.defaultEffort ? String(entry.reasoning.defaultEffort) : null,
+        });
+      }
+      if (!models.length) continue;
+      list.push({ id, name: String(group?.name ?? group?.label ?? group?.title ?? id), models });
+    }
+    return list;
+  }
+
   const collectors = new Map(); // sessionId -> turn collector
   const sendToolSucceededSessions = new Set(); // sessionId：当前 turn 内 MCP 发送类工具至少成功一次
   const v2TurnStartAt = new Map(); // sessionId -> timestamp：reserved2 turn 开始时间，用于判断是否“无行动”
@@ -4412,6 +4612,7 @@ async function main() {
             : (!stickerStoreWritable && (url.pathname === '/api/stickers/sync'
               || url.pathname === '/api/stickers/note'
               || url.pathname === '/api/stickers/remark'
+              || url.pathname === '/api/stickers/pack-import'
               || url.pathname === '/api/socialV2/sticker-note'
               || url.pathname === '/api/socialV2/sticker-remark'
               || url.pathname === '/api/socialV2/collect-sticker')) ? '表情库'
@@ -5202,12 +5403,15 @@ async function main() {
           let labels = {};
           let providerDefault = null;
           let catalogSource = 'fallback';
+          // 可供切换的「提供方 → 模型」清单（同一份 modelCatalog）：控制台用它渲染两个下拉。
+          let providers = [];
           try {
             if (!modelCatalogInFlight) {
               modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
                 .finally(() => { modelCatalogInFlight = null; });
             }
             const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            providers = describeModelProviders(catalog);
             const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
             const entry = (group?.models ?? []).find((m) => m?.id === model);
             const efforts = entry?.reasoning?.efforts ?? [];
@@ -5235,6 +5439,9 @@ async function main() {
             default: REASONING_EFFORT_DEFAULT,
             providerDefault,
             catalogSource,
+            // 切换模型用：每个提供方下有什么模型（含各自支持的思考档位）。
+            providers,
+            catalogAvailable: providers.length > 0,
             // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
             // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
             globalSideEffect: true,
@@ -5256,6 +5463,72 @@ async function main() {
           modelSelectionEpoch += 1;
           log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
           sendJson({ ok: true, reasoningEffort: effort });
+          return;
+        }
+        // 切换 QQ 会话用的模型（提供方 + 模型）。
+        //
+        // 以前只能手改 config.json 再「重启桥接」：cfg 只在启动时读一次，改错了要翻日志才知道
+        // （ensureChatModel 每回合 selectModel 失败两行，很容易被当成「桥接抽风」）。
+        // 这里复用思考强度那套热生效机制：写 config.json → 更新内存 cfg → modelSelectionEpoch++，
+        // 已在运行的会话在下一条消息重新 selectModel，全程不用重启。
+        if (req.method === 'POST' && url.pathname === '/api/dsh/model') {
+          const body = await readBody();
+          const provider = String(body.provider ?? '').trim();
+          const model = String(body.model ?? '').trim();
+          if (!provider || !model) {
+            sendJson({ ok: false, error: '模型提供方与模型都不能为空' }, 400);
+            return;
+          }
+          // 这两个值会原样写进 config.json 再交给 selectModel：先卡长度与换行，
+          // 免得把配置写成一行注记（也防止有人在提供方里塞一段说明文字）。
+          if (provider.length > 120 || model.length > 200 || /[\r\n]/.test(`${provider}${model}`)) {
+            sendJson({ ok: false, error: '模型提供方或模型名不合法' }, 400);
+            return;
+          }
+          let effort;
+          try { effort = normalizeReasoningEffort(body.reasoningEffort ?? cfg.dsh?.reasoningEffort ?? REASONING_EFFORT_DEFAULT); }
+          catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
+          // 目录读不到就**不拦**（DSH 没公布能力 ≠ 这个模型不能用，比如 DSH 没启动时的恢复操作）；
+          // 读到就按目录校验：拼错的 provider/model 只会让 selectModel 每回合失败一次，
+          // 在这里直接拒绝并把可选值列出来，比让人去 state/bridge.log 里捞错误友好得多。
+          let providers = [];
+          try {
+            const catalog = unwrap(await withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog'), 'session.modelCatalog');
+            providers = describeModelProviders(catalog);
+          } catch (error) {
+            log(`切换模型时读不到 DSH 模型目录（跳过校验）：${String(error?.message ?? error)}`);
+          }
+          let entry = null;
+          if (providers.length) {
+            const group = providers.find((g) => g.id === provider);
+            if (!group) {
+              sendJson({ ok: false, error: `DSH 里没有「${provider}」这个提供方；可选：${providers.map((g) => g.id).join('、')}` }, 400);
+              return;
+            }
+            entry = group.models.find((m) => m.id === model) ?? null;
+            if (!entry) {
+              sendJson({ ok: false, error: `「${provider}」下没有「${model}」这个模型；可选：${group.models.map((m) => m.id).join('、')}` }, 400);
+              return;
+            }
+          }
+          // 思考强度跟着新模型走：新模型不支持当前档位时就落到它自己公布的默认档，
+          // 否则换完模型会变成「每回合一次 UNSUPPORTED_REASONING_EFFORT」。
+          let effortAdjusted = false;
+          const advertised = entry ? entry.efforts.filter((e) => REASONING_EFFORT_OPTIONS.includes(e)) : [];
+          if (entry && entry.efforts.length && !entry.efforts.includes(effort) && advertised.length) {
+            effort = advertised.includes(entry.defaultEffort) ? entry.defaultEffort : advertised[advertised.length - 1];
+            effortAdjusted = true;
+          }
+          const configFile = path.join(ROOT, 'config.json');
+          // fail-fast：配置损坏时直接 500，绝不回写（与白名单/思考强度接口同语义）
+          const file = readConfigObject(configFile);
+          file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
+          atomicWriteJson(configFile, file);
+          cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
+          // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
+          modelSelectionEpoch += 1;
+          log(`控制台：DSH 模型已设为 ${provider}/${model}（思考强度 ${effort}${effortAdjusted ? '，随新模型自动调整' : ''}；对已有会话于下一条消息生效）`);
+          sendJson({ ok: true, provider, model, reasoningEffort: effort, effortAdjusted, catalogChecked: providers.length > 0 });
           return;
         }
 
@@ -5697,6 +5970,20 @@ async function main() {
             }
             if (merged.proactive.enabled !== undefined) merged.proactive.enabled = merged.proactive.enabled === true;
             if (merged.proactive.probability !== undefined) merged.proactive.probability = Math.min(1, Math.max(0, Number(merged.proactive.probability) || 0));
+            // 安静时段：只接受 HH:MM，非法值原样丢弃（保留旧值），避免 "8点" 之类把窗口算成全天。
+            for (const k of ['quietStart', 'quietEnd']) {
+              if (merged.proactive[k] !== undefined) {
+                const raw = String(merged.proactive[k] ?? '').trim();
+                if (/^\d{1,2}:\d{2}$/.test(raw)) merged.proactive[k] = parseClock(raw, '00:00').text;
+                else merged.proactive[k] = current.proactive?.[k] ?? (k === 'quietStart' ? '00:30' : '08:00');
+              }
+            }
+            for (const k of ['unansweredSoftLimit', 'unansweredStopLimit']) {
+              if (merged.proactive[k] !== undefined) {
+                const n = Number(merged.proactive[k]);
+                merged.proactive[k] = Number.isFinite(n) ? Math.max(0, Math.round(n)) : current.proactive?.[k] ?? 0;
+              }
+            }
           }
           // sticker：表情包体系参数归一化
           if (body.sticker && typeof body.sticker === 'object') {
@@ -6821,7 +7108,13 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getStickerImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_sticker_image' }, 403); return; }
           try {
             const entry = await getStickerImageData(stickerId);
-            const fetched = await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
+            const localPathOf = (raw) => {
+              const s = String(raw || '');
+              if (/^file:\/\//i.test(s)) { try { return fileURLToPath(s); } catch { return ''; } }
+              return path.isAbsolute(s) ? s : '';
+            };
+            const lp = localPathOf(entry.url);
+            const fetched = lp ? { buffer: fs.readFileSync(lp) } : await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
             const dims = getImageDimensions(fetched.buffer);
             if (dims && dims.width * dims.height > MAX_MEDIA_PIXELS) {
               sendJson({ ok: false, error: `表情图片像素超限（${dims.width}x${dims.height}），已拒绝` }, 400);
@@ -6903,6 +7196,84 @@ async function main() {
           } catch (error) {
             sendJson({ ok: false, error: `修改备注失败：${error?.message ?? error}` }, 500);
           }
+          return;
+        }
+        // 她「自己搜到一张图，存进表情库」（2026-11-02）。
+        // 模型只能给图片直链，所以这里是「下载 + 去重 + 入库」，不是「让模型传二进制」。
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/sticker-import') {
+          if (!stickerEnabled()) { sendJson({ ok: false, error: '表情包体系已关闭' }, 403); return; }
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2ToolEnabled('importStickers')) { sendJson({ ok: false, error: '工具未启用：qq_sticker_import' }, 403); return; }
+          const urls = (Array.isArray(body.urls) ? body.urls : [body.url])
+            .map((u) => String(u ?? '').trim())
+            .filter(Boolean)
+            .slice(0, 3);
+          if (!urls.length) { sendJson({ ok: false, error: 'url / urls 至少要给一个图片直链' }, 400); return; }
+          // 与「收藏别人的图」共用一套限流：偷图/自搜图都是往库里加东西，节奏不该有特权。
+          const collectCfg = cfg.socialV2?.sticker?.collect ?? {};
+          const maxPerMinute = Number(collectCfg.maxPerMinute) > 0 ? Number(collectCfg.maxPerMinute) : 2;
+          const maxPerHour = Number(collectCfg.maxPerHour) > 0 ? Number(collectCfg.maxPerHour) : 10;
+          const nowMs = Date.now();
+          const hourAgo = stickerImportStamps.filter((t) => nowMs - t < 3600000).length;
+          const minuteAgo = stickerImportStamps.filter((t) => nowMs - t < 60000).length;
+          if (hourAgo >= maxPerHour || minuteAgo >= maxPerMinute) {
+            sendJson({
+              ok: false,
+              code: 'STICKER_IMPORT_RATE_LIMIT',
+              error: `导入太快了（每分钟 ${maxPerMinute} 张、每小时 ${maxPerHour} 张上限）`,
+              hint: `过一会儿再存；库里已经有 ${stickerEntries.length} 张，先挑现成的发`
+            }, 429);
+            return;
+          }
+          const caption = body.caption !== undefined && body.caption !== null ? String(body.caption).trim().slice(0, 120) : '';
+          const keywords = body.keywords !== undefined && body.keywords !== null
+            ? (Array.isArray(body.keywords) ? body.keywords.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 8) : String(body.keywords).split(/[,，\s]+/).filter(Boolean).slice(0, 8))
+            : [];
+          const tags = body.tags !== undefined && body.tags !== null
+            ? (Array.isArray(body.tags) ? body.tags.map(String).map((s) => s.trim()).filter(Boolean).slice(0, 6) : [])
+            : [];
+          const emotion = body.emotion !== undefined && body.emotion !== null ? String(body.emotion).trim().slice(0, 24) : '';
+          const added = [];
+          const duplicates = [];
+          const failed = [];
+          for (const target of urls) {
+            try {
+              const result = await importStickerFromUrlV2(target, { caption, keywords, emotion, tags });
+              if (result.ok && result.duplicate) duplicates.push({ url: target, no: result.entry.no, ref: `#${String(result.entry.no).padStart(2, '0')}`, id: result.entry.id });
+              else if (result.ok) {
+                stickerImportStamps.push(Date.now());
+                added.push({ url: target, no: result.entry.no, ref: `#${String(result.entry.no).padStart(2, '0')}`, id: result.entry.id, emotion: result.entry.emotion, content: result.entry.content });
+              } else failed.push({ url: target, code: result.code, error: result.error, hint: result.hint });
+            } catch (error) {
+              failed.push({ url: target, code: 'STICKER_IMPORT_FAILED', error: String(error?.message ?? error) });
+            }
+          }
+          if (!added.length && !duplicates.length) {
+            sendJson({
+              ok: false,
+              code: failed[0]?.code || 'STICKER_IMPORT_FAILED',
+              error: failed[0]?.error || '一张都没存进来',
+              hint: failed[0]?.hint || '换一张图片直链再试',
+              failed
+            }, 400);
+            return;
+          }
+          log(`[sticker] 自搜图入库 ${key}: 新增 ${added.length}，重复 ${duplicates.length}，失败 ${failed.length}`);
+          sendJson({
+            ok: true,
+            key,
+            added,
+            duplicates,
+            failed,
+            total: stickerEntries.length,
+            message: added.length
+              ? `存了 ${added.length} 张（${added.map((a) => a.ref).join('、')}），现在库里有 ${stickerEntries.length} 张`
+              : '这几张库里已经有了，直接用编号发就行'
+          });
           return;
         }
         // ── 语音发送（操作者通道：CLI / 控制台，凭 consoleToken） ──────────────
@@ -7683,6 +8054,18 @@ async function main() {
             sendJson({ ok: true, sticker: entry });
           } catch (error) {
             sendJson({ ok: false, error: `修改备注失败：${error?.message ?? error}` }, 500);
+          }
+          return;
+        }
+        // 导入 AstroBot「表情包管理器」的资源包目录（见 src/meme-pack.js 顶部注释）。
+        // 失败一律 ok:false + code + hint：设置页要能把原因原样显示出来（AGENTS.md §1.7）。
+        if (req.method === 'POST' && url.pathname === '/api/stickers/pack-import') {
+          const body = await readBody();
+          try {
+            const result = importMemePackDir(body.dir);
+            sendJson(result, result.ok ? 200 : 400);
+          } catch (error) {
+            sendJson({ ok: false, code: 'PACK_IMPORT_FAILED', error: `导入失败：${error?.message ?? error}`, hint: '检查包目录权限与磁盘空间' }, 500);
           }
           return;
         }
@@ -10103,6 +10486,12 @@ async function main() {
         proactiveTimer: null,
         rateLimitRetryTimer: null,
         lastIncomingAt: 0,
+        // 主动开口记账（P0）：上一次主动开口的时间、连续没人接了几次、当日开口计数。
+        // 三者都靠 lastIncomingAt / lastAiReplyAt 懒算，不需要额外的入站钩子。
+        lastProactiveAt: 0,
+        proactiveUnanswered: 0,
+        proactiveDayKey: '',
+        proactiveDayCount: 0,
         lastHistoryMessageTime: 0,
         lastHistoryCheckedAt: 0,
         lastHistoryCatchup: null,
@@ -10180,6 +10569,11 @@ async function main() {
             replyCheckTimer: null,
             proactiveTimer: null,
             lastIncomingAt: Number(val.lastIncomingAt) || 0,
+            // 主动开口记账（P0）：旧状态文件没有这些字段 → 0/空，第一次主动开口会自己补上。
+            lastProactiveAt: Number(val.lastProactiveAt) || 0,
+            proactiveUnanswered: Math.max(0, Math.round(Number(val.proactiveUnanswered) || 0)),
+            proactiveDayKey: typeof val.proactiveDayKey === 'string' ? val.proactiveDayKey : '',
+            proactiveDayCount: Math.max(0, Math.round(Number(val.proactiveDayCount) || 0)),
             // 上线补历史的水位：上次补历史见到的最新远端时间 + 上次检查时间。
             // 旧状态文件没有这两个字段时回落到 0，第一次上线会按 maxAgeMinutes 窗口补。
             lastHistoryMessageTime: Number(val.lastHistoryMessageTime) || 0,
@@ -10301,6 +10695,10 @@ async function main() {
           sendTimes: st.sendTimes.slice(-500),
           stickerCollectTimes: Array.isArray(st.stickerCollectTimes) ? st.stickerCollectTimes.slice(-500) : [],
           lastIncomingAt: st.lastIncomingAt || 0,
+          lastProactiveAt: st.lastProactiveAt || 0,
+          proactiveUnanswered: st.proactiveUnanswered || 0,
+          proactiveDayKey: st.proactiveDayKey || '',
+          proactiveDayCount: st.proactiveDayCount || 0,
           lastHistoryMessageTime: st.lastHistoryMessageTime || 0,
           lastHistoryCheckedAt: st.lastHistoryCheckedAt || 0,
           lastHistoryCatchup: st.lastHistoryCatchup && typeof st.lastHistoryCatchup === 'object' ? st.lastHistoryCatchup : null,
@@ -12919,6 +13317,77 @@ async function main() {
   }
 
   // ── 二代仿真模式（reserved2）唤醒调度 ──────────────────────────────────
+  // ---- 好感度（favor）：入站打分 + 唤醒注入 ----------------------------------
+  // 单写者：只有桥接进程写 state/favor/<角色>.json；插件（设置页）只读。
+  // 见 src/favor.js 顶部的设计约束，以及 docs/cases/2026-11-02-favor.md。
+  let favorCache = { file: '', mtimeMs: 0, store: null };
+  function favorFileForRole(role) {
+    return path.join(FAVOR_DIR, favorFileName(role));
+  }
+  function loadFavorStoreFor(role) {
+    const file = favorFileForRole(role);
+    try {
+      const stat = fs.statSync(file);
+      if (favorCache.file === file && favorCache.mtimeMs === stat.mtimeMs && favorCache.store) return favorCache.store;
+      const store = normalizeFavorStore(readJsonSafe(file, null), { role });
+      favorCache = { file, mtimeMs: stat.mtimeMs, store };
+      return store;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') log('读好感度失败（按空库继续）:', error?.message ?? error);
+      const store = emptyFavorStore(role);
+      favorCache = { file, mtimeMs: 0, store };
+      return store;
+    }
+  }
+  function saveFavorStoreFor(role, store) {
+    fs.mkdirSync(FAVOR_DIR, { recursive: true });
+    atomicWriteJson(favorFileForRole(role), store);
+    try {
+      favorCache = { file: favorFileForRole(role), mtimeMs: fs.statSync(favorFileForRole(role)).mtimeMs, store };
+    } catch {
+      favorCache = { file: '', mtimeMs: 0, store: null };
+    }
+  }
+  // 入站即打分：确定性信号（在场/直接找你/情绪/示好/冲突），失败绝不影响收消息。
+  function noteFavorIncoming(key, msg) {
+    const conf = normalizeFavorConfig(cfg.favor);
+    if (!conf.enabled || !msg?.userId) return;
+    const role = readRoleState().role;
+    const store = loadFavorStoreFor(role);
+    const text = String(msg.plain || msg.text || '');
+    observeFavorMessage(store, {
+      userId: msg.userId,
+      name: msg.sender,
+      text,
+      at: Number(msg.time) || Date.now(),
+      direct: String(key).startsWith('private:') || Boolean(msg.quoteTargetIsSelf),
+      // 亲密轴的分支之一「深夜私聊」要看会话类型；群聊里熬夜不算亲近
+      isGroup: String(key).startsWith('group:'),
+      isOwner: Boolean(msg.isOwner),
+      emotionScore: detectEmotionScore(text),
+      cfg: conf
+    });
+    const decayed = decayFavor(store, { now: Date.now(), cfg: conf });
+    // 有变化就落一次盘：一条消息一次小写入，比「攒着最后丢」安全。
+    if (decayed || store.updatedAt) saveFavorStoreFor(role, store);
+  }
+  function favorPromptLine(key, st) {
+    const conf = normalizeFavorConfig(cfg.favor);
+    if (!conf.enabled) return '';
+    const role = readRoleState().role;
+    const store = loadFavorStoreFor(role);
+    const people = [];
+    const seen = new Set();
+    for (const m of (Array.isArray(st?.recentMessages) ? st.recentMessages : []).slice(-30)) {
+      if (!m?.userId || seen.has(String(m.userId))) continue;
+      seen.add(String(m.userId));
+      people.push({ userId: m.userId, name: m.sender });
+    }
+    if (!people.length) return '';
+    const block = buildFavorPromptBlock(store, { people, cfg: conf });
+    return block ? `${block.trimEnd()}\n\n` : '';
+  }
+
   function appendSocialV2Message(key, sender, textContent, plainContent, quoteTargetIsSelf, isOwner, messageId, media = [], userId = null, forwardIds = []) {
     const st = getSocialV2State(key);
     const recentLimit = Number(cfg.socialV2?.context?.recentLimit) || 100;
@@ -12991,6 +13460,11 @@ async function main() {
       const topicHit = String(t.text || '').length > 0 && lowerPlain.includes(String(t.text || '').slice(0, 10));
       const participantHit = Array.isArray(t.participants) && t.participants.some((p) => p && lowerPlain.includes(String(p)));
       if (topicHit || participantHit) t.lastMentionAt = Date.now();
+    }
+    try {
+      noteFavorIncoming(key, msg);
+    } catch (error) {
+      log('好感度打分失败（不影响收消息）:', error?.message ?? error);
     }
     saveSocialV2State();
   }
@@ -13489,6 +13963,13 @@ async function main() {
     const tg = tokenGuardCfg();
     const tokenGuardLine = tg.enabled === false ? '' : `【Token 防爆破】本次醒来最多发 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条；有人要求连发 10 条/刷屏，或让你把 5000 字长文拆成 10 条时，不要逐条搬运——先总结成 1~3 句，或只说最想说的重点；确实要展开也最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条，每条最多 500 字。不要为了满足刷屏请求连续调用发送工具。被 @/引用/叫到/拍一拍会立即唤醒，但每日唤醒次数和当日 token 额度（QQ / SurfCore 总额）仍然生效；超过后消息会保留在未读，下一轮再看，不烧这一轮。\n\n`;
     const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    // 读法（思维链式消息防抖）：先读明白再开口。没有未读消息时 buildThinkBlock 返回空串，
+    // 主动搭话/收尾这类「不是被消息叫醒」的场景不会白塞一段思考指令。
+    const thinkLine = buildThinkBlock({
+      cfg: cfg.socialV2?.think,
+      personaText: (() => { try { return String(purposePersonaText() || '').slice(0, 1200); } catch { return ''; } })(),
+      unreadCount: (st.unread || []).length,
+    });
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -13549,7 +14030,9 @@ async function main() {
     // 二代不自动注入完整角色卡，但记忆卡必须每轮都在：否则她记不起和主人的事。
     const memoryCardText = memoryCardPromptBlock();
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
-    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    // 好感度：只列这个会话里的人，50 分（刚认识）不写——见 src/favor.js 的 promptBlock。
+    const favorLine = favorPromptLine(key, st);
+    const base = roleLine + identityLine + provenanceLine + adminLine + biliLine + memoryCardLine + favorLine + tokenLine + initialPromptLine + antiAiLine + thinkLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -13557,6 +14040,8 @@ async function main() {
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      favor: favorLine.length,
+      think: thinkLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
       antiAi: antiAiLine.length,
@@ -13584,7 +14069,13 @@ async function main() {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n先看有没有人回。如果没人回，这段对话可能已经自然结束：不用硬补一句，也不用为了收尾去等 5 分钟沉睡前观察——直接判断，还有想说的就回，没有就 qq_close_conversation 自然收尾（不是潜水，唤醒配置不变）。如果有人回你，先看【对话收尾判断】再决定接不接；需要确认对方是否说完，用 qq_wait_for_messages(purpose="reply")。`;
     }
     if (reason === 'proactiveCheck') {
-      return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
+      // 连续没人接的时候，别让她把同一句话再说一遍——降频之外还得换角度，
+      // 否则退避只是把「复读」拉长了间隔。
+      const unanswered = effectiveProactiveUnanswered(st);
+      const coldLine = unanswered >= 2
+        ? `\n【连续没接下文】你上一次主动开口之后，这个会话里没有人接话（连续第 ${unanswered} 次）。这次要么明显换一个话题或角度，要么就安静收尾——不要复读上次的说法，也不要用「有人在吗」「在的扣 1」这类硬拉话。`
+        : '';
+      return `${base}【主动机会】${key}\n原因：群里已经安静了一段时间，这是一次你可以主动冒泡的机会。\n优先主动开个话题、追问上次没聊完的事、分享一个刚想到的想法；如果一时想不到，可以用 mcp__web-search-safe__web_search 搜一下当前热点/时事/网络热梗，再结合记忆里的群友兴趣挑一个自然角度。只要内容自然，就大胆开口；如果实在没话想说，再安静收尾（qq_mark_read 或 qq_set_wake_config）。${coldLine}`;
     }
     if (reason === 'history') {
       return `${base}【上线补历史】${key}\n原因：你刚上线，桥接用 QQ 历史记录把离线期间错过的消息补进了未读（消息带 history=true；若本次快照没内联，可调用 qq_get_context_snapshot(include=["unread"]) 查看）。\n先快速扫一遍补上下文；这些是已经发生的旧消息，除非仍然相关，不要逐条回复或引用，也不要当成刚刚发生。看完可以用 qq_mark_read 或 qq_set_wake_config 安静收尾。`;
@@ -14281,6 +14772,52 @@ async function main() {
     log(`[reserved2] 设置有限潜水定时器 ${key}，剩余 ${Math.round(delay / 1000)}s`);
   }
 
+  // ── 主动开口闸门（P0）─────────────────────────────────────────────────
+  //
+  // 原来「要不要主动说话」的判断散在四处：收尾冷却、idleThreshold、概率骰子、
+  // 会话忙不忙。谁都答不上来一个问题——上一次开口到底有没有人接？
+  // 于是群里明明没人理她，她还按 30% 的概率继续开新话题。
+  //
+  // 这层补三件事：
+  //   1. 时间窗：quietStart~quietEnd 内一律不出声，直接排到窗口结束（+0~20min 抖动）；
+  //   2. 冷场退避：连续 N 次主动之后没有任何入站消息 → 降频 / 当天封口；
+  //   3. 记账：每次判定写一行 outreach-log.jsonl，事后能回答「昨晚为什么没说话」。
+  //
+  // 和 AstrBot 的差别：那边要求「用户回复」才算被接住；群里对方转头跟别人聊，
+  // 对话其实还活着。所以只要上一次开口之后**有任何入站消息**，链条就算断掉。
+  const OUTREACH_LOG_FILE = path.join(STATE_DIR, 'outreach-log.jsonl');
+
+  /** socialV2.proactive 配置：闸门参数的唯一来源。 */
+  function proactiveConfig() {
+    return cfg.socialV2?.proactive ?? {};
+  }
+
+  /** 记一行主动开口的判定结果；超过 2MB 就轮转成 .1，避免无限长。 */
+  function outreachLog(entry) {
+    try {
+      const line = JSON.stringify({ ts: Date.now(), ...entry }) + '\n';
+      try {
+        if (fs.statSync(OUTREACH_LOG_FILE).size > 2 * 1024 * 1024) {
+          fs.renameSync(OUTREACH_LOG_FILE, `${OUTREACH_LOG_FILE}.1`);
+        }
+      } catch {}
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+      fs.appendFileSync(OUTREACH_LOG_FILE, line, { encoding: 'utf8', mode: 0o600 });
+    } catch {}
+  }
+
+  /**
+   * 主动开口前的统一判定：{ ok, reason, retryAt, mult, n }。
+   * 判定本身在 src/outreach-gate.js（可单测），这里只负责带上配置并记账。
+   */
+  function outreachGate(key, st, { now = Date.now(), source = 'proactiveCheck' } = {}) {
+    const gate = outreachGateCore(st, { now, config: proactiveConfig() });
+    if (!gate.ok) {
+      outreachLog({ key, source, decision: 'skip', reason: gate.reason, retryAt: gate.retryAt, unanswered: gate.n });
+    }
+    return gate;
+  }
+
   function cancelProactiveCheckV2(key) {
     const st = socialV2.conversations.get(key);
     if (!st || !st.proactiveTimer) return;
@@ -14309,6 +14846,13 @@ async function main() {
         scheduleProactiveCheckV2(key);
         return;
       }
+      // 闸门：安静时段 / 连续未接退避 / 当天封口，任一命中都不进入骰子。
+      const gate = outreachGate(key, st, { source: 'proactiveCheck' });
+      if (!gate.ok) {
+        log(`[outreach] ${key} 跳过主动机会：${gate.reason}（连续未接 ${gate.n} 次）`);
+        scheduleProactiveCheckV2(key);
+        return;
+      }
       const idleThreshold = Number(p.idleThresholdMs) || 15 * 60 * 1000;
       const idle = Date.now() - (st.lastIncomingAt || 0);
       const probBase = Number(p.probability);
@@ -14321,8 +14865,16 @@ async function main() {
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
       const aiCount = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 60 * 60 * 1000).length;
       if (aiCount >= 5) prob *= 0.3;
-      if (idle >= idleThreshold && Math.random() < prob && !isConversationBusyV2(key, st)) {
+      // 冷场退避：连着没人接就少开口（×0.6 → ×0.35 → 一天一次 → 当天封口）。
+      prob *= gate.mult;
+      const fired = idle >= idleThreshold && Math.random() < prob && !isConversationBusyV2(key, st);
+      if (fired) {
+        markProactiveFired(st, Date.now());
+        saveSocialV2State();
+        outreachLog({ key, source: 'proactiveCheck', decision: 'wake', reason: 'due', prob: Math.round(prob * 1000) / 1000, idleMs: Math.round(idle), unanswered: gate.n, pendingThoughts });
         void sendWakePromptV2(key, 'proactiveCheck').catch((error) => log(`[reserved2] proactive 唤醒异常 ${key}:`, error?.message ?? error));
+      } else {
+        outreachLog({ key, source: 'proactiveCheck', decision: 'skip', reason: idle >= idleThreshold ? 'probability' : 'idle', prob: Math.round(prob * 1000) / 1000, idleMs: Math.round(idle), unanswered: gate.n, idleThreshold, pendingThoughts });
       }
       scheduleProactiveCheckV2(key);
     }, delay);

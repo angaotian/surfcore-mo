@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -23,6 +24,12 @@ import { EMOTION_LABELS } from './sticker-semantics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+
+// 点歌管线：本机 Seed-VC 翻唱。解释器必须是装了 torch/demucs/seed-vc 的那个 venv，
+// 不能用系统 python（那里没有这些包）。路径写死是有意的 —— 这套东西和 voice-local
+// 语音包绑在一起，跟着语音包走，不做成可配置项免得配错后报一堆看不懂的 import 错误。
+const SING_PY = 'E:\\Administrator\\surfcore\\state\\voice-packs\\voice-local\\.venv-gsv\\Scripts\\python.exe';
+const SING_JOB = 'E:\\deepseek-zgq\\sing\\songjob.py';
 
 function loadConfig() {
   try {
@@ -349,6 +356,7 @@ const TOOL_CONFIG_FLAGS = {
   qq_collect_sticker: 'collectSticker',
   qq_get_self_image: 'getSelfImage',
   qq_sticker_note: 'stickerNote',
+  qq_sticker_import: 'importStickers',
   qq_set_sticker_remark: 'setStickerRemark',
 };
 const TOOL_PROFILE = String(cfg.socialV2?.toolProfile || (cfg.socialV2?.tools?.getSnapshot === false ? 'full' : 'balanced'));
@@ -1369,6 +1377,42 @@ if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.stickerNote
   );
 }
 
+if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.importStickers !== false) {
+  server.tool(
+    'qq_sticker_import',
+    '把一张「图片直链」存进表情库（自己搜图收藏用）：先用自己的联网搜索找到表情图片本身的地址（.jpg/.png/.gif/.webp，或图片 CDN 直链），再调用这里。桥接会下载、校验是不是图、按 md5 去重、入库并返回编号，之后就能用 qq_send_sticker 发它。注意：网页地址（HTML 页面）不行；每次最多 3 张；有频率上限（默认每分钟 2 张、每小时 10 张）。库里的图够多时优先挑现成的，不要为了存而存。',
+    {
+      key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+      token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+      url: z.string().optional().describe('一张图片直链（http/https）'),
+      urls: z.array(z.string()).optional().describe('最多 3 张图片直链（和 url 二选一）'),
+      caption: z.string().optional().describe('这张图是什么、什么时候用（一句话，最多 120 字，会成为它的描述）'),
+      keywords: z.array(z.string()).optional().describe('触发关键词，最多 8 个'),
+      emotion: z.enum(EMOTION_LABELS).optional().describe('情绪分类（不确定就不填，会按 caption 自动判）'),
+      tags: z.array(z.string()).optional().describe('可选标签，最多 6 个')
+    },
+    async ({ key, token, url, urls, caption, keywords, emotion, tags }) => {
+      try {
+        const payload = { key };
+        if (url !== undefined && url !== null) payload.url = String(url);
+        if (Array.isArray(urls) && urls.length) payload.urls = urls.map(String);
+        if (caption !== undefined && caption !== null) payload.caption = String(caption);
+        if (keywords !== undefined && keywords !== null) payload.keywords = Array.isArray(keywords) ? keywords.map(String) : [];
+        if (emotion !== undefined && emotion !== null) payload.emotion = String(emotion);
+        if (tags !== undefined && tags !== null) payload.tags = Array.isArray(tags) ? tags.map(String) : [];
+        const data = await agentApi('/api/socialV2/sticker-import', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+          headers: { 'x-agent-token': token }
+        });
+        return { content: [{ type: 'text', text: serializeModelData(data) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `存表情失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+}
+
 if (cfg.socialV2?.sticker?.enabled !== false && cfg.socialV2?.tools?.setStickerRemark !== false) {
   server.tool(
     'qq_set_sticker_remark',
@@ -1461,6 +1505,121 @@ if (cfg.socialV2?.tools?.getForwardMsg !== false) {
         return { content };
       } catch (error) {
         return { content: [{ type: 'text', text: `查看合并转发失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+  // ── 点歌（本地翻唱管线）────────────────────────────────────────────────
+  // 有人在群里 @ 她说「唱歌《某歌》」时用这两个工具。
+  //
+  // 为什么要拆成 start/status 两个工具：一首歌要跑 2~3 分钟（片段档），单个工具调用
+  // 等不起 —— MCP 调用超时后模型会以为失败了，于是重试，于是同时跑三首歌把显存挤爆。
+  // 所以 start 立刻返回作业号，实际管道在独立进程里跑；过一会儿用 status 取结果。
+  server.tool(
+    'qq_sing_song',
+    '点歌（翻唱）：让本机翻唱管线用你自己的音色跑一首歌，成品会**自动作为语音条发回当前会话**，不用你再发。立刻返回作业号，不会阻塞等待（片段档约 2~3 分钟）。默认只做副歌/片段（60 秒，够听出是什么歌），整首要传 full=true 但会慢到 8~10 分钟。注意：① 同一时间只跑一首，已经有一首在跑时会返回 ok=false，别硬点，等它唱完；② 歌名给中文原名就行，不要带「无损」「MV」这类修饰；③ 没人声的纯音乐/伴奏放不出来。',
+    {
+      key: z.string().describe('会话 key（group:群号 或 private:QQ号），成品会自动发回这个会话'),
+      keyword: z.string().describe('歌名，如「雨爱」「起风了」。可以带歌手名，如「杨丞琳 雨爱」'),
+      voice: z.string().optional().describe('音色名，默认 age12。目前本机只有 age12 有可用参考音'),
+      full: z.boolean().optional().describe('是否做整首（默认 false = 只做副歌/片段 60 秒）。整首要 8~10 分钟'),
+      snippet: z.number().optional().describe('片段秒数，默认 60。32 秒以上才值得，太短听不出是不是这首歌')
+    },
+    async ({ key, keyword, voice, full, snippet }) => {
+      try {
+        const convKey = String(key || '').trim();
+        if (!convKey) {
+          return { content: [{ type: 'text', text: '点歌失败：必须给会话 key（group:群号 / private:QQ号），否则唱完不知道发到哪' }], isError: true };
+        }
+        const args = [SING_JOB, 'start', String(keyword || '').trim(), '--voice', String(voice || 'age12'),
+          '--deliver-to', convKey];
+        if (full === true) args.push('--full');
+        else if (snippet != null) args.push('--snippet', String(Number(snippet) || 60));
+        const out = execFileSync(SING_PY, args, {
+          encoding: 'utf8',
+          timeout: 30000,
+          windowsHide: true,
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+        });
+        const job = JSON.parse(out);
+        if (job.ok === false) {
+          return {
+            content: [{
+              type: 'text',
+              text: serializeModelData({
+                ok: false,
+                原因: job.message || '已经有一首在唱了',
+                在跑的: job.running || null,
+                hint: '别重复点，等这首唱完（可以过一两分钟用 qq_sing_status 看一眼）。跟对方说一句「前面还有一首在唱，排着呢」就行。'
+              })
+            }]
+          };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: serializeModelData({
+              ok: true,
+              jobId: job.id,
+              keyword: job.keyword,
+              预计: full === true ? '约 8~10 分钟' : '约 2~3 分钟',
+              自动发货: `跑完会自动作为语音条发到 ${convKey}`,
+              hint: '已经安排了自动发送，你不用再查状态、也不用再调 qq_send_voice。跟对方说一句「等下，我唱着」就好，然后正常聊天。'
+            })
+          }]
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `点歌失败：${error?.message ?? error}` }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'qq_sing_status',
+    '查点歌作业的进度。传 qq_sing_song 返回的 jobId；不给 jobId 就列最近几个作业。返回 state：running=还在跑（看 stageName 知道跑到哪一步了）、done=跑完了、failed=失败了（看 error）。成品是**自动发货**的，done 且 delivered.ok=true 就说明已经发出去了，千万不要再调 qq_send_voice 补发（会重复）。running 时也不要重复点同一首歌。',
+    {
+      jobId: z.string().optional().describe('qq_sing_song 返回的作业号；不传则列最近作业'),
+      tail: z.number().optional().describe('附带多少行日志尾巴，默认 8，排查失败原因时有用')
+    },
+    async ({ jobId, tail }) => {
+      try {
+        const args = jobId
+          ? [SING_JOB, 'status', String(jobId)]
+          : [SING_JOB, 'list', '--limit', '5'];
+        const out = execFileSync(SING_PY, args, {
+          encoding: 'utf8',
+          timeout: 30000,
+          windowsHide: true,
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+        });
+        const data = JSON.parse(out);
+        const rows = Array.isArray(data) ? data : [data];
+        const view = rows.map((j) => ({
+          jobId: j.id,
+          keyword: j.keyword,
+          state: j.state,
+          stageName: j.stageName,
+          片段: j.progress?.segment ?? null,
+          成品: j.deliverName ?? null,
+          失败原因: j.state === 'failed' ? (j.reason || j.friendly || '没识别出来，看日志') : undefined,
+          可以这样跟对方说: j.state === 'failed' && (j.reason || j.friendly)
+            ? `刚刚那首没唱成：${j.reason || j.friendly}`
+            : undefined,
+          error: j.error || undefined,
+          发货: j.delivered
+            ? (j.delivered.ok
+              ? `已自动发到 ${j.delivered.target}（${j.delivered.verified ? '已回读确认' : '未回读'}），别再补发`
+              : `自动发送失败：${j.delivered.error || '未知原因'}`)
+            : (j.deliverTo ? `已安排自动发到 ${j.deliverTo}` : '没有安排自动发送'),
+          接下来: j.state === 'done'
+            ? (j.delivered?.ok ? '已经发出去了，正常聊天就行' : '成品在语音库里，看「发货」字段判断要不要手动处理')
+            : (j.state === 'running'
+              ? '还在跑，过一会儿再查'
+              : (j.state === 'failed' ? '跟对方说一声，别让他一直等' : undefined)),
+          日志: Array.isArray(j.logTail) ? j.logTail.slice(-(tail ?? 8)) : undefined
+        }));
+        return { content: [{ type: 'text', text: serializeModelData(rows.length === 1 ? view[0] : view) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `查点歌状态失败：${error?.message ?? error}` }], isError: true };
       }
     }
   );

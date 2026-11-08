@@ -1383,6 +1383,94 @@ ${body}`;
     json(res, 400, { ok: false, error: '未知 action' });
   }
 
+  // ── 好感度（只读快照）──────────────────────────────────────────────────
+  // 打分和落盘都在桥接进程（src/favor.js）：这里绝不写 state/favor/*.json，
+  // 两进程写同一份 JSON 是 PITFALLS #14 的老坑。设置页只负责展示与解释。
+  const FAVOR_LEVELS = [
+    [85, '很亲近'], [75, '亲近'], [60, '熟悉'], [40, '普通'], [25, '生疏'], [10, '冷淡'], [-Infinity, '敌意'],
+  ];
+  function favorLevelLabel(score) {
+    const s = Number(score) || 0;
+    const hit = FAVOR_LEVELS.find(([min]) => s >= min);
+    return (hit || FAVOR_LEVELS[FAVOR_LEVELS.length - 1])[1];
+  }
+  // 与 src/favor.js 的 favorFileName 必须一致（同一套文件名规则）。
+  function favorFileName(role) {
+    const raw = String(role ?? '').trim() || 'default';
+    const safe = raw.replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^\.+/, '').slice(0, 60);
+    return `${safe || 'default'}.json`;
+  }
+  // 与 src/favor.js 的 STAGES 必须一致（只用于展示；真正的判定在桥接进程里）。
+  const FAVOR_STAGES = {
+    stranger: { label: '生疏', threshold: 0, gate: 0, favorW: 0.7, intimacyW: 0.3 },
+    familiar: { label: '熟识', threshold: 25, gate: 20, favorW: 0.5, intimacyW: 0.5 },
+    close: { label: '亲近', threshold: 55, gate: 40, favorW: 0.35, intimacyW: 0.65 },
+    bond: { label: '默契', threshold: 80, gate: 60, favorW: 0.4, intimacyW: 0.6 },
+  };
+  function favorStageOf(key) {
+    return FAVOR_STAGES[String(key ?? '')] || FAVOR_STAGES.stranger;
+  }
+  const FAVOR_STAGE_ORDER = ['stranger', 'familiar', 'close', 'bond'];
+  async function handleFavor(req, res) {
+    const roleState = readJson(path.join(QQ_STATE_DIR(), 'current-role.json'), {}) ?? {};
+    const role = String(roleState.role || '');
+    const file = path.join(QQ_STATE_DIR(), 'favor', favorFileName(role));
+    const store = readJson(file, null);
+    const qqCfg = readQqConfig()?.config ?? {};
+    const now = Date.now();
+    const people = Object.values(store?.people ?? {})
+      .filter((p) => p && typeof p === 'object')
+      .map((p) => {
+        const stageKey = FAVOR_STAGES[String(p.stage ?? '')] ? String(p.stage) : 'stranger';
+        const stage = favorStageOf(stageKey);
+        const firstAt = Number(p.firstAt) || 0;
+        const score = Number(p.score) || 0;
+        const intimacy = Number(p.intimacy) || 0;
+        // 老文件（v1）没有 composite：按当前档权重现算一份展示值，不写回文件
+        const rawComposite = Number(p.composite);
+        const composite = Number.isFinite(rawComposite) && rawComposite !== 0
+          ? rawComposite
+          : stage.favorW * score + stage.intimacyW * intimacy;
+        return {
+          userId: String(p.userId ?? ''),
+          name: String(p.name ?? ''),
+          score,
+          level: favorLevelLabel(p.score),
+          intimacy: Math.round(intimacy * 10) / 10,
+          composite: Math.round(composite * 10) / 10,
+          stage: stageKey,
+          stageLabel: stage.label,
+          stageThreshold: stage.threshold,
+          stageGate: stage.gate,
+          nextThreshold: FAVOR_STAGES[FAVOR_STAGE_ORDER[FAVOR_STAGE_ORDER.indexOf(stageKey) + 1]]?.threshold ?? null,
+          nextGate: FAVOR_STAGES[FAVOR_STAGE_ORDER[FAVOR_STAGE_ORDER.indexOf(stageKey) + 1]]?.gate ?? null,
+          stagePeak: FAVOR_STAGES[String(p.stagePeak ?? '')] ? String(p.stagePeak) : stageKey,
+          days: firstAt && now > firstAt ? Math.floor((now - firstAt) / 86400000) : 0,
+          lastAt: Number(p.lastAt) || 0,
+          events: (Array.isArray(p.events) ? p.events : []).slice(-5).reverse().map((e) => ({
+            at: Number(e.at) || 0,
+            delta: Number(e.delta) || 0,
+            why: String(e.why ?? ''),
+            note: String(e.note ?? ''),
+            axis: e.axis === 'intimacy' ? 'intimacy' : 'favor',
+          })),
+        };
+      })
+      .sort((a, b) => b.composite - a.composite);
+    json(res, 200, {
+      ok: true,
+      enabled: qqCfg?.favor?.enabled !== false,
+      intimacyEnabled: qqCfg?.favor?.intimacy !== false,
+      role,
+      file: path.basename(file),
+      exists: Boolean(store),
+      version: Number(store?.version) || 0,
+      updatedAt: Number(store?.updatedAt) || 0,
+      count: people.length,
+      people,
+    });
+  }
+
   // ── 模式 / ownerQQ ─────────────────────────────────────────────────────
   async function handleMode(req, res) {
     if (req.method === 'GET') {
@@ -1429,6 +1517,65 @@ ${body}`;
       try { await callBridge('/api/mode', { method: 'POST', body: { mode } }); } catch {}
     }
     json(res, 200, { ok: true, mode: mode ?? current.mode ?? null, ownerQQ: ownerQQ ?? null, note: '若桥接未运行，下次启动时生效。' });
+  }
+
+  // ── 表情包资源包（AstroBot meme_manager 格式）─────────────────────────────
+  // 读：桥接的 /api/stickers（它才是 stickers.json 的唯一写者）；
+  // 写：桥接的 /api/stickers/pack-import（扫描目录 + 复制图片 + 落库都在桥接侧）。
+  // 这里只做转发和「失败也可见」的包装（AGENTS.md §1.7）。
+  async function handleStickerPackImport(req, res) {
+    if (req.method === 'GET') {
+      const r = await callBridge('/api/stickers?count=200', { timeoutMs: 8000 });
+      if (!r.ok) {
+        json(res, 502, {
+          ok: false, code: 'STICKER_BRIDGE_OFFLINE',
+          error: `拿不到表情库：${r.data?.error || r.error || `HTTP ${r.status}`}`,
+          hint: '桥接没运行或控制台令牌不一致；先在「概览」确认桥接在线'
+        });
+        return;
+      }
+      const items = Array.isArray(r.data?.items) ? r.data.items : [];
+      const groups = new Map();
+      for (const item of items) {
+        const tags = Array.isArray(item.tags) ? item.tags : [];
+        const name = tags.find((t) => t && t !== 'meme-pack') || '未分组';
+        groups.set(name, (groups.get(name) || 0) + 1);
+      }
+      json(res, 200, {
+        ok: true,
+        total: Number(r.data?.total) || items.length,
+        writable: r.data?.writable !== false,
+        groups: [...groups.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+        items: items.slice(0, 60).map((i) => ({ no: i.no, ref: i.ref, content: i.content, emotion: i.emotion, tags: i.tags }))
+      });
+      return;
+    }
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, code: 'STICKER_PACK_METHOD', error: '只支持 GET / POST', hint: 'POST { dir } 导入一个资源包目录' });
+      return;
+    }
+    let body = {};
+    try {
+      body = JSON.parse((await readBody(req)) || '{}');
+    } catch {
+      json(res, 400, { ok: false, code: 'STICKER_PACK_BODY', error: '请求体不是合法 JSON', hint: '传 { "dir": "D:\\\\packs\\\\official-001" }' });
+      return;
+    }
+    const dir = String(body.dir ?? '').trim();
+    if (!dir) {
+      json(res, 400, { ok: false, code: 'STICKER_PACK_DIR_EMPTY', error: '没填资源包目录', hint: '填包含 manifest.json 的那个文件夹（可以点「浏览」选）' });
+      return;
+    }
+    const r = await callBridge('/api/stickers/pack-import', { method: 'POST', body: { dir }, timeoutMs: 60000 });
+    if (!r.ok && !r.data) {
+      json(res, 502, {
+        ok: false, code: 'STICKER_BRIDGE_UNREACHABLE',
+        error: `桥接不可达：${r.error || `HTTP ${r.status}`}`,
+        hint: '导入必须由桥接进程执行（它是 stickers.json 的唯一写者），先启动桥接'
+      });
+      return;
+    }
+    json(res, r.ok ? 200 : (r.status || 400), r.data ?? { ok: false, code: 'STICKER_PACK_FAILED', error: '桥接没有返回内容' });
   }
 
   // ── 扩展 ────────────────────────────────────────────────────────────────
@@ -3299,6 +3446,44 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  // ── DSH 模型（QQ 会话用的提供方 / 模型 / 思考强度）──────────────────────
+  // 读写都代理到桥接的 /api/dsh/model：那边会写 config.json 并热更新内存里的 cfg，
+  // 已经开着的 QQ 会话在下一句消息重新绑定，不用重启桥接。
+  // 桥接没在跑时返回 200 + ok:false（而不是 5xx），设置页要能显示「先启动桥接」。
+  async function handleModel(req, res) {
+    if (req.method === 'GET') {
+      const r = await callBridge('/api/dsh/model', { method: 'GET' });
+      if (!r.ok) {
+        json(res, 200, {
+          ok: false,
+          running: false,
+          error: r.data?.error || r.error || `读不到桥接（HTTP ${r.status || '连不上'}）`,
+          hint: '先启动 QQ 桥接，再回来切换模型。',
+        });
+        return;
+      }
+      json(res, 200, { ok: true, running: true, ...r.data });
+      return;
+    }
+    if (req.method === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = await callBridge('/api/dsh/model', {
+        method: 'POST',
+        body: { provider: body.provider, model: body.model, reasoningEffort: body.reasoningEffort },
+        timeoutMs: 8000,
+      });
+      // 桥接的校验失败（400）原样透出：前端要能显示「可选：deepseek-account、fox-api-deepseek」。
+      if (r.status === 400) { json(res, 400, r.data ?? { ok: false, error: '模型或提供方不合法' }); return; }
+      if (!r.ok) {
+        json(res, 502, { ok: false, error: r.data?.error || r.error || '桥接没有响应', hint: '桥接可能正在重启；稍后再试。' });
+        return;
+      }
+      json(res, 200, r.data ?? { ok: true });
+      return;
+    }
+    json(res, 405, { ok: false, error: '只支持 GET / POST' });
+  }
+
   // ── 路由：API 前缀 ──────────────────────────────────────────────────────
   route('prefix', API_PREFIX, async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -3321,6 +3506,12 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/memory-card/full`) { await handleMemoryCardFull(req, res, url); return; }
     if (pathname === `${API_PREFIX}/memory-card`) { await handleMemoryCard(req, res); return; }
     if (pathname === `${API_PREFIX}/align`) { await handleAlign(req, res); return; }
+    if (pathname === `${API_PREFIX}/favor`) {
+      if (req.method !== 'GET') { json(res, 405, { ok: false, code: 'FAVOR_READONLY', error: '好感度只读：打分在桥接进程里，设置页不写这个文件', hint: '要调整分数请改群里的互动，或等桥接控制台的调整接口' }); return; }
+      await handleFavor(req, res);
+      return;
+    }
+    if (pathname === `${API_PREFIX}/sticker-pack/import`) { await handleStickerPackImport(req, res); return; }
     if (pathname === `${API_PREFIX}/mode`) { await handleMode(req, res); return; }
     if (pathname === `${API_PREFIX}/extensions`) { await handleExtensions(req, res); return; }
     if (pathname === `${API_PREFIX}/platforms`) { await handlePlatforms(req, res); return; }
@@ -3376,6 +3567,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
     if (pathname === `${API_PREFIX}/diagnostics`) { await handleDiagnostics(req, res); return; }
     if (pathname === `${API_PREFIX}/bridge`) { await handleBridge(req, res); return; }
+    if (pathname === `${API_PREFIX}/model`) { await handleModel(req, res); return; }
     if (pathname.startsWith(`${API_PREFIX}/purpose`)) { await handlePurpose(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/voice`)) { await handleVoice(req, res, url); return; }
     if (pathname.startsWith(`${API_PREFIX}/pet`)) { await handlePet(req, res, url); return; }

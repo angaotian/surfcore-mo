@@ -946,7 +946,7 @@ window.__ModuleLoader__.load({
         F("dsh.baseUrl", "DSH 地址", "桥接连接本机 DSH 的 Web 地址"),
         F("dsh.provider", "模型提供方", "例如 deepseek-account"),
         F("dsh.model", "模型", "QQ 会话使用的模型"),
-        F("dsh.reasoningEffort", "思考强度", "low / medium / high / max"),
+        F("dsh.reasoningEffort", "思考强度", "low / high / max（改这里要重启桥接；用上面的「DSH 模型」卡可即时生效）"),
         F("dsh.authToken", "DSH token", "通常留空，由桥接自动发现", "password"),
         F("dsh.allowRemote", "允许远程 DSH", "默认关；关掉只连本机", "switch"),
         // ownerQQ 不在这里：它已上移到两个标签页顶部的「管理员（QQ ⇄ B站 · 同一个人）」卡片，
@@ -1124,6 +1124,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.proactive.checkIntervalMaxMs", "检查最大间隔（ms）", "", "number"),
         F("socialV2.proactive.idleThresholdMs", "空闲阈值（ms）", "", "number"),
         F("socialV2.proactive.probability", "主动概率", "", "number", { min: 0, max: 1, step: 0.01 }),
+        // 主动开口闸门（P0）：安静时段 + 连续没人接的退避。留空 = 用默认值（00:30~08:00）。
+        F("socialV2.proactive.quietStart", "安静时段开始（HH:MM）", "这段时间内不会主动开口；跨零点写法如 23:00 也可", "text"),
+        F("socialV2.proactive.quietEnd", "安静时段结束（HH:MM）", "到点后 0~20 分钟内才恢复（带抖动，避免每天准点冒泡）", "text"),
+        F("socialV2.proactive.unansweredSoftLimit", "连续没接多少次后降频", "达到后概率减半、当天最多再主动一次；0 = 关闭退避", "number", { min: 0, step: 1 }),
+        F("socialV2.proactive.unansweredStopLimit", "连续没接多少次后当天停止", "达到后当天不再主动开口（@/提问/私聊照常回）；0 = 不封口", "number", { min: 0, step: 1 }),
         F("socialV2.feedback.maxLength", "反馈最大字符", "", "number"),
         F("socialV2.feedback.notifyOwnerOnError", "出错通知管理员", "", "switch"),
         F("socialV2.media.maxBytes", "图片单条最大字节", "", "number"),
@@ -1154,7 +1159,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("slang.autoResearch", "自动联网研究", "", "switch"),
       ]},
       { group: "联网搜索", fields: [
-        F("webSearch.provider", "搜索后端", "auto / deepseek / bing", "select", { options: [["auto", "auto"], ["deepseek", "deepseek"], ["bing", "bing"]] }),
+        F("webSearch.provider", "搜索后端", "auto / anysearch / deepseek / bing", "select", { options: [["auto", "auto"], ["anysearch", "anysearch"], ["deepseek", "deepseek"], ["bing", "bing"]] }),
         F("webSearch.apiKeyEnv", "凭据环境变量", "默认 DEEPSEEK_API_KEY"),
         F("webSearch.apiKey", "搜索 API Key", "不推荐写死；留 ******** 保持原值", "password"),
         F("webSearch.baseURL", "搜索端点", "必须 https 且解析到公网"),
@@ -1163,6 +1168,13 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("webSearch.maxTokens", "最大 token", "", "number", { min: 1 }),
         F("webSearch.maxResults", "返回条数", "", "number", { min: 1 }),
         F("webSearch.timeoutMs", "超时（ms）", "", "number"),
+        F("webSearch.anysearch.enabled", "Anysearch 实时检索", "auto 的第一跳；关掉后只走 DeepSeek→Bing（搜索词不再发给 api.anysearch.com）", "switch"),
+        F("webSearch.anysearch.endpoint", "Anysearch 端点", "默认 https://api.anysearch.com/mcp，必须 https 且解析到公网"),
+        F("webSearch.anysearch.apiKey", "Anysearch API Key", "可留空：匿名也能用，额度更小", "password"),
+        F("webSearch.anysearch.apiKeyEnv", "Anysearch 凭据环境变量", "默认 ANYSEARCH_API_KEY"),
+        F("webSearch.anysearch.timeoutMs", "Anysearch 超时（ms）", "", "number"),
+        F("webSearch.anysearch.freshness", "默认时效", "不限定就用上游默认排序", "select", { options: [["", "不限定"], ["day", "一天内"], ["week", "一周内"], ["month", "一月内"], ["year", "一年内"]] }),
+        F("webSearch.anysearch.contentTypes", "默认内容类型", "留空=通用；可填 news,doc,code 等，逗号分隔", "list"),
       ]},
     ];
 
@@ -2746,6 +2758,107 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
           h("span", { className: "qbw-hint" }, "保存后桥接下一条消息生效；群成员数由 OneBot 缓存 10 分钟。")));
     }
 
+    // ── DSH 模型（QQ 会话用哪个提供方 / 模型 / 思考强度）───────────────────
+    // 走插件 /model 代理到桥接 /api/dsh/model：保存即写 config.json 并热更新内存里的 cfg，
+    // 已经开着的 QQ 会话在下一句消息重新绑定，不用重启桥接。
+    function ModelSwitchCard({ cfg, set, toast }) {
+      const [data, setData] = useState(null);
+      const [error, setError] = useState("");
+      const [provider, setProvider] = useState("");
+      const [model, setModel] = useState("");
+      const [effort, setEffort] = useState("");
+      const [msg, setMsg] = useState("");
+      const [saving, setSaving] = useState(false);
+
+      const providers = Array.isArray(data?.providers) ? data.providers : [];
+      const knownEfforts = Array.isArray(data?.options) && data.options.length ? data.options : ["low", "high", "max"];
+
+      const load = useCallback(async () => {
+        try {
+          const r = await api("/model");
+          setData(r);
+          setError(r.ok === false ? (r.error || "读不到桥接") : "");
+          setProvider(r.provider || cfg?.dsh?.provider || "");
+          setModel(r.model || cfg?.dsh?.model || "");
+          setEffort(r.reasoningEffort || cfg?.dsh?.reasoningEffort || "");
+        } catch (e) { setError(e.message); }
+      }, [cfg?.dsh?.provider, cfg?.dsh?.model, cfg?.dsh?.reasoningEffort]);
+      useEffect(() => { void load(); }, [load]);
+
+      const group = providers.find((p) => p.id === provider) ?? null;
+      const models = Array.isArray(group?.models) ? group.models : [];
+      const entry = models.find((m) => m.id === model) ?? null;
+      const declared = Array.isArray(entry?.efforts) ? entry.efforts.filter((x) => knownEfforts.includes(x)) : [];
+      const effortOptions = declared.length ? declared : knownEfforts;
+      const effortValue = effortOptions.includes(effort) ? effort : (effortOptions[0] ?? "");
+      const bridgeDown = data ? data.ok === false : false;
+
+      const pickProvider = (next) => {
+        setProvider(next);
+        const g = providers.find((p) => p.id === next);
+        const list = Array.isArray(g?.models) ? g.models : [];
+        if (!list.some((m) => m.id === model)) setModel(list[0]?.id ?? "");
+      };
+      const pickModel = (next) => {
+        setModel(next);
+        const nextEntry = models.find((m) => m.id === next) ?? null;
+        const ds = Array.isArray(nextEntry?.efforts) ? nextEntry.efforts.filter((x) => knownEfforts.includes(x)) : [];
+        if (ds.length && !ds.includes(effort)) setEffort(ds[0]);
+      };
+
+      const save = async () => {
+        if (!provider.trim() || !model.trim()) { setMsg("❌ 先选提供方和模型"); return; }
+        setSaving(true); setMsg("");
+        try {
+          const r = await api("/model", { method: "POST", body: { provider: provider.trim(), model: model.trim(), reasoningEffort: effortValue || undefined } });
+          const adjusted = r.effortAdjusted ? `；新模型不支持原来的思考强度，已落到 ${r.reasoningEffort}` : "";
+          const unverified = r.catalogChecked === false ? "（没读到 DSH 模型目录，模型名未经校验）" : "";
+          setMsg(`✅ 已设为 ${r.provider} / ${r.model}${r.reasoningEffort ? `（思考强度 ${r.reasoningEffort}）` : ""}${adjusted}${unverified}；QQ 里下一条消息生效`);
+          // 同步进设置表单，免得随后点底部「保存」把旧值写回 config.json
+          set(["dsh", "provider"], r.provider);
+          set(["dsh", "model"], r.model);
+          if (r.reasoningEffort) set(["dsh", "reasoningEffort"], r.reasoningEffort);
+          await load();
+        } catch (e) { setMsg(`❌ ${e.message}`); } finally { setSaving(false); }
+      };
+
+      const current = `${data?.provider || cfg?.dsh?.provider || "?"} / ${data?.model || cfg?.dsh?.model || "?"}`;
+      return h("div", { className: "qbw-card", style: { marginBottom: "10px" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start", flexWrap: "wrap" } },
+          h("div", null,
+            h("h4", { style: { margin: 0 } }, "DSH 模型",
+              data?.running ? h("span", { className: "qbw-badge ok" }, "桥接在线") : null),
+            h("p", { style: { marginTop: "4px" } },
+              bridgeDown ? "桥接没在跑，读不到 DSH 的模型目录。" : `QQ 聊天当前用：${current}${data?.reasoningEffort ? ` · 思考强度 ${data.reasoningEffort}` : ""}`)),
+          h(Btn, { kind: "qbw-btn2", onClick: load, disabled: saving }, "刷新")),
+        error ? h("div", { className: "qbw-err", style: { marginTop: "6px" } }, error, data?.hint ? ` ${data.hint}` : "") : null,
+        h(Row, { label: "提供方", hint: providers.length ? "官方账号 / 中转站，来自 DSH 公布的模型目录" : "读不到模型目录时只能靠下面的输入" },
+          h("select", { className: "qbw-select", value: provider, disabled: saving || !providers.length,
+            onChange: (e) => pickProvider(e.target.value) },
+            providers.length
+              ? providers.map((p) => h("option", { key: p.id, value: p.id }, p.name && p.name !== p.id ? `${p.name}（${p.id}）` : p.id))
+              : h("option", { value: provider }, provider || "（未知）"),
+            provider && !providers.some((p) => p.id === provider)
+              ? h("option", { value: provider }, `${provider}（不在 DSH 目录里）`) : null)),
+        h(Row, { label: "模型", hint: models.length ? `${models.length} 个可选` : "读不到目录" },
+          h("select", { className: "qbw-select", value: model, disabled: saving || !models.length,
+            onChange: (e) => pickModel(e.target.value) },
+            models.length
+              ? models.map((m) => h("option", { key: m.id, value: m.id }, m.name && m.name !== m.id ? `${m.name}（${m.id}）` : m.id))
+              : h("option", { value: model }, model || "（未知）"),
+            model && !models.some((m) => m.id === model)
+              ? h("option", { value: model }, `${model}（不在 DSH 目录里）`) : null)),
+        h(Row, { label: "思考强度", hint: declared.length ? "来自该模型公布的档位" : "该模型没公布档位，发过去可能被中转站忽略" },
+          h("select", { className: "qbw-select", value: effortValue, disabled: saving || !effortOptions.length,
+            onChange: (e) => setEffort(e.target.value) },
+            effortOptions.map((v) => h("option", { key: v, value: v }, v)))),
+        h("div", { className: "qbw-actions", style: { marginTop: "6px" } },
+          h(Btn, { onClick: save, disabled: saving || bridgeDown || !provider || !model }, saving ? "保存中…" : "保存模型"),
+          h("span", { className: "qbw-hint" }, "保存后写进 ", h("code", { className: "qbw-code" }, "<surfcore>/config.json"),
+            "，已经在跑的 QQ 会话下一条消息重新绑定，不用重启桥接。")),
+        msg ? h("div", { className: msg.startsWith("❌") ? "qbw-err" : "qbw-hint", style: { marginTop: "6px" } }, msg) : null);
+    }
+
     function QQTab({ cfg, set, admin, setAdmin, unified, setUnified, overview, busy, setBusy, toast, reload, goTab, onSave }) {
       const [query, setQuery] = useState("");
       const tools = Object.keys(cfg?.socialV2?.tools ?? {});
@@ -2798,6 +2911,7 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
           running: Boolean(overview?.bridge?.running || overview?.bridge?.ok),
           overview,
         }),
+        h(ModelSwitchCard, { cfg, set, toast }),
         h(AdminCard, { admin, onChange: setAdmin, qqPrivate: cfg?.allow?.private ?? [], qqAllowAll: cfg?.allowAllWhenEmpty === true, toast }),
         h(WhitelistCard, {
           allow: cfg?.allow ?? {},
@@ -4765,6 +4879,102 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
             "仅主人可触发：群聊里最后一条消息必须是你发的（5 分钟内），且一条消息最多换一条语音。")) : null);
     }
 
+    function FavorTab({ busy, setBusy, toast, reload }) {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState("");
+      const load = useCallback(async () => {
+        try { const r = await api("/favor"); setData(r); setErr(""); } catch (e) { setErr(e.message); }
+      }, []);
+      useEffect(() => { load(); }, [load]);
+      const people = data?.people ?? [];
+      return h("div", null,
+        h("div", { className: "qbw-infobox" },
+          "关系有两条轴：好感（喜不喜欢，0-100）和亲密（有多熟，0-100）。常聊天、直接找你、带情绪会涨好感；亲密只认深度互动——连续聊、说得多、共同约定、道歉和好、深夜私聊。骂人/冲突掉得最狠。",
+          "升阶段要同时过分数门槛和亲密门槛（生疏→熟识→亲近→默契），所以「聊得多」刷不出「关系深」；掉档要连续 7 天低于阈值才降一档。打分在桥接进程里按确定性规则做，设置页只读。"),
+        err ? h("div", { className: "qbw-warnbox" }, `⚠️ 读取失败：${err}`) : null,
+        !data ? h("div", { className: "qbw-hint" }, err ? "" : "加载中…") : h("div", null,
+          h("div", { className: "qbw-card" },
+            h("h4", null, "当前状态"),
+            h("p", null, `角色：${data.role || "（未设置）"}　｜　开关：${data.enabled ? "已开启" : "已关闭（config.json 里 favor.enabled=false）"}${data.intimacyEnabled === false ? "　｜　亲密轴：已关闭" : ""}`),
+            h("p", null, data.exists
+              ? `共记录 ${data.count} 人　｜　最近更新：${data.updatedAt ? new Date(data.updatedAt).toLocaleString() : "—"}`
+              : `还没有数据：等她收到几条 QQ 消息后会自动出现（文件：${data.file}）。`),
+            h("div", { className: "qbw-actions" }, h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新"))),
+          people.length === 0
+            ? h("div", { className: "qbw-hint" }, data.exists ? "（记录为空）" : "")
+            : people.map((p) => h("div", { className: "qbw-item", key: p.userId },
+              h("div", null,
+                h("div", { className: "qbw-label" },
+                  `${p.name || p.userId}：好感 ${p.score}　亲密 ${p.intimacy ?? 0}　（${p.stageLabel || p.level}${p.days ? ` · 认识 ${p.days} 天` : ""}）`),
+                h("div", { className: "qbw-hint" },
+                  p.stagePeak && p.stagePeak !== p.stage ? `（曾经到过：${p.stagePeak}）` : "",
+                  p.nextThreshold != null
+                    ? `　升下一档还差：分数 ${Math.max(0, Math.round(p.nextThreshold - p.composite))} / 亲密 ${Math.max(0, Math.round(p.nextGate - p.intimacy))}`
+                    : "　已经是最高一档"),
+                ...(p.events ?? []).map((e, i) => h("div", { className: "qbw-hint", key: i },
+                  `${new Date(e.at).toLocaleString()}　${e.axis === "intimacy" ? "亲密 " : ""}${e.delta > 0 ? "+" : ""}${e.delta}　${e.why}${e.note ? `　「${e.note}」` : ""}`)))))));
+    }
+
+    function StickersTab({ busy, setBusy, toast }) {
+      const [data, setData] = useState(null);
+      const [err, setErr] = useState("");
+      const [dir, setDir] = useState("");
+      const [result, setResult] = useState(null);
+      const [importing, setImporting] = useState(false);
+      const load = useCallback(async () => {
+        try { const r = await api("/sticker-pack/import"); setData(r); setErr(""); } catch (e) { setErr(e.message); }
+      }, []);
+      useEffect(() => { load(); }, [load]);
+      const pick = async () => {
+        try {
+          const r = await browseNative("dir", "选择表情包目录（里面有 manifest.json）");
+          if (r?.ok && r.path) setDir(r.path);
+          else if (r && !r.ok && !r.cancelled && r.error) toast(`✗ ${r.error}`);
+        } catch (e) { toast(`✗ ${e.message}`); }
+      };
+      const runImport = async () => {
+        if (!dir.trim()) { toast("先选一个资源包目录"); return; }
+        setImporting(true);
+        setResult(null);
+        try {
+          const r = await api("/sticker-pack/import", { method: "POST", body: { dir: dir.trim() } });
+          setResult(r);
+          toast(r.added > 0 ? `✓ 导入 ${r.added} 张` : "没有新增（都已在库里）");
+          await load();
+        } catch (e) {
+          setResult({ ok: false, code: e.code, error: e.message, hint: e.hint });
+          toast(`✗ ${e.message}`);
+        } finally { setImporting(false); }
+      };
+      const groups = data?.groups ?? [];
+      return h("div", null,
+        h("div", { className: "qbw-infobox" },
+          "这里消费 AstroBot「表情包管理器（meme_manager）」的资源包格式：一个目录里有 manifest.json + memes/<分类>/<图片>，可选 memes_data.json 与 semantic_metadata.json。",
+          "导入会把图片复制进 SurfCore 自己的表情目录（包被删了也不影响她发），标注文字变成描述/关键词，情绪用 SurfCore 自己的词表推断。重复导入同一个包会跳过，不会冲掉你后来手动补的备注。"),
+        err ? h("div", { className: "qbw-warnbox" }, `⚠️ 读取失败：${err}`, h("div", { className: "qbw-hint" }, "表情库由桥接进程写，桥接没起来时这里只能读不到数据。")) : null,
+        h("div", { className: "qbw-card" },
+          h("h4", null, "当前表情库"),
+          !data ? h("div", { className: "qbw-hint" }, "加载中…") : h("div", null,
+            h("p", null, `共 ${data.total} 张${data.writable === false ? "（只读降级：启动时加载失败，导入不会落盘）" : ""}`),
+            groups.length ? h("div", { className: "qbw-hint" }, groups.map((g) => `${g.name} ${g.count} 张`).join("　｜　")) : h("div", { className: "qbw-hint" }, "（图库为空）"),
+            h("div", { className: "qbw-actions" }, h(Btn, { kind: "qbw-btn2", onClick: load, disabled: !!busy }, "刷新")))),
+        h("div", { className: "qbw-card" },
+          h("h4", null, "导入资源包"),
+          h("div", { className: "qbw-hint" }, "在 AstroBot 那边装好的包，目录一般在它的 data/plugins 或下载解压后的文件夹里；选到含 manifest.json 的那一层。"),
+          h("div", { className: "qbw-row", style: { marginTop: "6px" } },
+            h("input", { className: "qbw-input", value: dir, placeholder: "D:\\packs\\official-001", onChange: (e) => setDir(e.target.value), style: { flex: 1 } }),
+            h(Btn, { kind: "qbw-btn2", onClick: pick, disabled: importing }, "浏览…"),
+            h(Btn, { onClick: runImport, disabled: importing }, importing ? "导入中…" : "导入")),
+          result ? h("div", { className: result.ok ? "qbw-infobox" : "qbw-warnbox", style: { marginTop: "8px" } },
+            result.ok
+              ? `✓ ${result.pack?.name || result.pack?.id}（${result.pack?.version || "?"}）：新增 ${result.added} 张，跳过 ${result.skipped} 张，现共 ${result.total} 张。`
+              : `✗ ${result.error || "导入失败"}${result.code ? `（${result.code}）` : ""}`,
+            !result.ok && result.hint ? h("div", { className: "qbw-hint" }, result.hint) : null,
+            result.ok && (result.skippedDetail?.length ?? 0) > 0
+              ? h("div", { className: "qbw-hint" }, `跳过原因：${result.skippedDetail.map((s) => `${s.rel}=${s.reason}`).join("、")}`)
+              : null) : null));
+    }
+
     function MemoryTab({ qq, unified, setUnified, overview, busy, setBusy, toast, reload }) {
       const [data, setData] = useState(null);
       const [card, setCard] = useState(null);
@@ -5923,6 +6133,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
       ["tokens", "Token 额度"],
       ["watch", "观看历史"],
       ["memory", "记忆"],
+      ["favor", "好感度"],
+      ["stickers", "表情包"],
       ["align", "对齐"],
       ["extensions", "扩展"],
       ["advanced", "全部参数"],
@@ -6132,6 +6344,8 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
         if (tab === "voice") return h(VoiceTab, { toast: notify });
         if (tab === "pet") return h(PetTab, { toast: notify, unified, setUnified: setUnifiedPath });
         if (tab === "memory") return h(MemoryTab, { qq: normalizedQq, unified, setUnified: setUnifiedPath, overview, busy, setBusy, toast: notify, reload });
+        if (tab === "favor") return h(FavorTab, { busy, setBusy, toast: notify, reload });
+        if (tab === "stickers") return h(StickersTab, { busy, setBusy, toast: notify });
         if (tab === "align") return h(AlignTab, { busy, setBusy, toast: notify, reload });
         if (tab === "extensions") return h(ExtensionsTab, { busy, setBusy, toast: notify, reload });
         if (tab === "advanced") return h(AdvancedTab, { qq: normalizedQq, bili, unified: normalizedUnified, setQqPath, setBiliPath, setUnifiedPath, busy });

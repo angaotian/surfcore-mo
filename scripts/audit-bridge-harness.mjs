@@ -41,10 +41,13 @@ import * as actionPlanner from '../src/action-planner.js';
 import * as sessionMap from '../src/session-map.js';
 import * as contextTelemetry from '../src/context-telemetry.js';
 import * as memoryCard from '../src/memory-card.js';
+import * as favor from '../src/favor.js';
+import * as think from '../src/think.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
+import * as outreachGate from '../src/outreach-gate.js';
 import * as conversationClosure from '../src/conversation-closure.js';
 import { fetchVideoInfo } from '../src/bili-api.js';
 import * as stateAcl from '../src/state-acl.mjs';
@@ -75,7 +78,7 @@ function wavFixture() {
   return Buffer.concat([h, data]);
 }
 
-export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {} } = {}) {
+export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, history = {}, unary = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
   fs.mkdirSync(path.join(temp, 'state'));
@@ -155,7 +158,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     respond: async () => success({}),
     stopSessionWork: async (sessionId) => { calls.cancelled.push(sessionId); return { removed: 0 }; },
     cancelTurn: async (sessionId) => { calls.cancelled.push({ cancelTurn: sessionId }); return { ok: true }; },
-    callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
+    callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success(unary[method] ?? { accepted: true }); },
   };
   class FakeBot {
     async sendPrivateMessage(id, text) { calls.sent.push({ kind: 'private', id, text }); }
@@ -258,9 +261,20 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...personaIdentity,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...favor, ...think, ...biliCard, ...characterStore, ...historyCatchup,
+    // bridge.js 用 `import { x as y }` 起别名时，VM 里只剩原名（import 被剥掉），
+    // 别名要在这里补上，否则测试会报 "xxxAlias is not defined"。
+    emptyFavorStore: favor.emptyStore,
+    decayFavor: favor.decay,
+    normalizeFavorStore: favor.normalizeStore,
+    observeFavorMessage: favor.observeMessage,
+    buildFavorPromptBlock: favor.promptBlock,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
+    ...outreachGate,
+    // outreach-gate 在 bridge.js 里是起别名导入的，VM 剥掉 import 后只剩原名，这里补别名。
+    effectiveProactiveUnanswered: outreachGate.effectiveUnanswered,
+    outreachGateCore: outreachGate.outreachGate,
     ...conversationClosure,
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。

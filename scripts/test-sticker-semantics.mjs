@@ -240,7 +240,11 @@ test('高分推荐用强措辞，低分保留保守措辞（模型会自我审�
   const weak = buildStickerMatchHint([
     { no: 5, emotionLabel: '委屈', content: '抱着空碗', score: 0.4 }
   ], {});
-  assert.ok(weak.includes('真的贴合才发一张'), weak);
+  // 2026-11-02：低分话术从「真的贴合才发一张」放宽成「情绪差不太多就可以发」
+  // （用户反馈她发得太少，旧的保守措辞叠加模型自我审查，等于不发）。
+  // 保留的约束是：低分不能出现「很贴合」这种强措辞。
+  assert.ok(weak.includes('情绪差不太多就可以发一张'), weak);
+  assert.ok(!weak.includes('很贴合'), '低分不能吹成「很贴合」');
 });
 
 console.log('## 编号引用');

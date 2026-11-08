@@ -68,6 +68,29 @@ console.log('## sticker-lib 纯函数');
 }
 
 {
+  // 本地条目上传进 QQ 之后（resId = QQ emoji_id），同步回来不能变成第二条：
+  // 同一张图只留一行，本地认识的字段（note/tags/useCount）不能被 QQ 的空字段冲掉。
+  const local = [
+    {
+      id: 'local-dafeiyu-shengqi',
+      no: 3,
+      resId: 'q1',
+      url: 'file:///E:/x/shengqi.jpg',
+      md5: 'AAA',
+      desc: '抱着手臂生气',
+      localNote: '她真的会生气',
+      tags: ['大肥鱼'],
+      source: 'manual',
+      useCount: 7
+    }
+  ];
+  const merged = mergeStickerLibrary(local, [{ emoji_id: 'q1', resId: 'q1', url: 'https://qq/q1', md5: 'AAA', desc: '' }]);
+  ok(merged.length === 1, '认领了 emoji_id 的本地条目不会被同步复制成第二条');
+  ok(merged[0].id === 'local-dafeiyu-shengqi' && merged[0].url === 'https://qq/q1', '原地更新 URL，id 不变');
+  ok(merged[0].desc === '抱着手臂生气' && merged[0].localNote === '她真的会生气' && merged[0].useCount === 7, '本地认知字段不被 QQ 的空字段覆盖');
+}
+
+{
   // 编号引用：发图时最省事的写法，findSticker 必须能解析（#02 / 2 / 2号）
   const { entries } = ensureStickerIndex(mergeStickerLibrary([], [
     { emoji_id: 'a', resId: 'a', url: 'https://x/a', md5: 'ABC', desc: '笑死', createdAt: '2026-01-01T00:00:00Z' },
@@ -213,3 +236,26 @@ if (process.env.QQ_BRIDGE_TEST_LIVE === '1') {
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 if (fail > 0) process.exit(1);
+
+{
+  // 「优先发本地的」：同步会把 url 改写成 QQ CDN，但本地副本要留在 localUrl 上，
+  // 这样发图可以先读盘、不必再下载一次（也不受 CDN/内网封锁影响）。
+  const local = normalizeStickerEntry({
+    id: 'local-dafeiyu-shengqi',
+    no: 3,
+    resId: 'q1',
+    url: 'file:///E:/x/shengqi.jpg',
+    md5: 'AAA',
+    desc: '抱着手臂生气',
+    source: 'manual'
+  });
+  ok(local.localUrl === 'file:///E:/x/shengqi.jpg', 'url 是 file:// 时顺手记进 localUrl');
+
+  const merged = mergeStickerLibrary([local], [{ emoji_id: 'q1', resId: 'q1', url: 'https://qq/q1', md5: 'AAA', desc: '' }]);
+  ok(merged.length === 1, '认领后仍是一条');
+  ok(merged[0].url === 'https://qq/q1', 'url 被同步改成 CDN');
+  ok(merged[0].localUrl === 'file:///E:/x/shengqi.jpg', 'localUrl 不会被同步冲掉');
+
+  const noLocal = normalizeStickerEntry({ emoji_id: 'r', resId: 'r', url: 'https://qq/r', md5: 'RRR', desc: '外链' });
+  ok(noLocal.localUrl === '', '没有本地副本时 localUrl 留空，发图才走 URL');
+}

@@ -217,11 +217,15 @@ export function activePersonaFile() {
 export function readPersonaLayerText(kind = 'core', scene = '') {
   const layers = activePersonaLayers();
   if (!layers) return '';
+  // 本地补丁（2026-11-01）：这里原先缺 tone 分支，tone 会回退成 core，
+  // 于是 full 模式（私聊）把人格核心注入**两遍**、还能把 6000 字预算顶爆导致截断。
   const file = kind === 'daily'
     ? layers.daily
     : kind === 'scene'
       ? (layers.scenes?.[scene] || '')
-      : layers.core;
+      : kind === 'tone'
+        ? (layers.tone || '')
+        : layers.core;
   try { return file ? fs.readFileSync(file, 'utf8') : ''; } catch { return ''; }
 }
 

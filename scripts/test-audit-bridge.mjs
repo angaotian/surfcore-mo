@@ -361,7 +361,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
       ['POST', '/api/roles/rename'], ['POST', '/api/roles/delete'],
       ['GET', '/api/preset/sim-prompt'], ['POST', '/api/preset/sim-prompt'],
       ['GET', '/api/preset/sim-prompt/backups'], ['POST', '/api/preset/sim-prompt/restore'],
-      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
+      ['GET', '/api/dsh/model'], ['POST', '/api/dsh/model'], ['POST', '/api/dsh/effort'],
       ['GET', '/api/whitelist'], ['POST', '/api/whitelist'], ['POST', '/api/restart'],
       ['POST', '/api/console/token'], ['GET', '/api/role'], ['POST', '/api/role'],
     ];
@@ -434,6 +434,100 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(noToken.status, 403, '空会话令牌必须被拒绝');
     console.log('PASS console rejects foreign Host headers, non-exact tokens and token-less authorize/read');
   } catch (error) { failures++; console.error('FAIL console transport guards:', error.message); }
+  finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
+}
+
+// ── 控制台切换模型：写 config.json + 热更新 + 按 DSH 公布的目录校验 ──
+// 「官方模型 → 中转站」以前只能手改 config.json 再重启桥接（改错了要翻 state/bridge.log 才知道，
+// 现象只是每回合两行「设置会话模型失败」）。这个端点把它变成一次点击，并且换模型时把新模型
+// 不支持的思考档位落到它自己公布的默认档，否则换完每回合都会 UNSUPPORTED_REASONING_EFFORT。
+{
+  const fs = await import('node:fs');
+  const nodePath = await import('node:path');
+  const catalog = {
+    default: 'deepseek-flash',
+    routableProviders: ['deepseek-official', 'fox-api-deepseek'],
+    groups: [
+      { id: 'deepseek-official', name: 'DeepSeek 官方', models: [
+        { id: 'deepseek-flash', name: 'DeepSeek-V41-Flash', reasoning: { efforts: [{ id: 'low' }, { id: 'high' }, { id: 'max' }], defaultEffort: 'high' } },
+      ] },
+      // 故意公布一个白名单外的档位（medium）：换过来时只能落到 low。
+      { id: 'fox-api-deepseek', name: '中转站', models: [
+        { id: 'deepseek-v4.1-flash-1017', name: 'deepseek-v4.1-flash-1017', reasoning: { efforts: [{ id: 'low' }, { id: 'medium' }], defaultEffort: 'low' } },
+      ] },
+    ],
+  };
+  const h = await bridgeHarness({
+    config: { dsh: { authToken: 'fixture-only', provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'high' } },
+    unary: { 'session.modelCatalog': catalog },
+  });
+  const server = h.startConsoleServer();
+  try {
+    if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+    const port = server.address().port;
+    const call = (pathname, method = 'GET', headers = {}, body) => new Promise((resolve, reject) => {
+      const request = http.request(
+        { host: '127.0.0.1', port, path: pathname, method, headers: { 'content-type': 'application/json', ...headers } },
+        (response) => {
+          let data = '';
+          response.on('data', (chunk) => { data += chunk; });
+          response.on('end', () => resolve({ status: response.statusCode, body: data }));
+        },
+      );
+      request.on('error', reject);
+      request.setTimeout(3000, () => request.destroy(new Error('request hung')));
+      request.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+    const admin = { 'x-console-token': 'fixture-console-token' };
+    const post = (body) => call('/api/dsh/model', 'POST', admin, body);
+
+    // ① 目录随 GET 下发：控制台那两个下拉就靠它，档位要原样保留（含白名单外的 medium）。
+    const view = JSON.parse((await call('/api/dsh/model', 'GET', admin)).body);
+    assert.deepEqual(view.providers.map((p) => p.id), ['deepseek-official', 'fox-api-deepseek']);
+    assert.deepEqual(view.providers[1].models[0].efforts, ['low', 'medium']);
+    assert.equal(view.catalogAvailable, true);
+
+    // ② 非法输入一律 400：空值、换行（会把配置写成一行注记）、目录里没有的提供方 / 模型。
+    assert.equal((await post({ provider: '', model: 'x' })).status, 400);
+    assert.equal((await post({ provider: 'a\nb', model: 'x' })).status, 400);
+    assert.match(JSON.parse((await post({ provider: 'nope', model: 'x' })).body).error, /没有「nope」这个提供方/);
+    assert.match(JSON.parse((await post({ provider: 'fox-api-deepseek', model: 'gpt-4' })).body).error, /没有「gpt-4」这个模型/);
+
+    // ③ 正常切换：写盘 + 内存 cfg 同步 + 档位跟随新模型。
+    const ok = await post({ provider: 'fox-api-deepseek', model: 'deepseek-v4.1-flash-1017' });
+    assert.equal(ok.status, 200, `切换应成功，实际 ${ok.body}`);
+    const out = JSON.parse(ok.body);
+    assert.equal(out.effortAdjusted, true, '新模型不公布 high，档位应自动调整');
+    assert.equal(out.reasoningEffort, 'low', '应落到新模型公布的默认档');
+    const onDisk = JSON.parse(fs.readFileSync(nodePath.join(h.temp, 'config.json'), 'utf8'));
+    assert.equal(onDisk.dsh.provider, 'fox-api-deepseek');
+    assert.equal(onDisk.dsh.model, 'deepseek-v4.1-flash-1017');
+    assert.equal(onDisk.dsh.reasoningEffort, 'low');
+    assert.equal(onDisk.dsh.authToken, 'fixture-only', 'dsh 段其余字段必须原样保留');
+    assert.equal(h.cfg.dsh.provider, 'fox-api-deepseek', '内存 cfg 要同步，否则下一条消息还是老模型');
+
+    // ④ 目录读不到（DSH 没启动）时跳过校验照写：DSH 挂了也要能改回官方模型自救。
+    const h2 = await bridgeHarness();
+    const server2 = h2.startConsoleServer();
+    try {
+      if (!server2.listening) await new Promise((resolve) => server2.once('listening', resolve));
+      const res = await new Promise((resolve, reject) => {
+        const request = http.request(
+          { host: '127.0.0.1', port: server2.address().port, path: '/api/dsh/model', method: 'POST', headers: { 'content-type': 'application/json', ...admin } },
+          (response) => {
+            let data = '';
+            response.on('data', (chunk) => { data += chunk; });
+            response.on('end', () => resolve({ status: response.statusCode, body: data }));
+          },
+        );
+        request.on('error', reject);
+        request.end(JSON.stringify({ provider: 'deepseek-official', model: 'deepseek-flash' }));
+      });
+      assert.equal(res.status, 200, `目录不可用时也应写入，实际 ${res.body}`);
+      assert.equal(JSON.parse(res.body).catalogChecked, false);
+    } finally { await new Promise((resolve) => server2.close(resolve)); await h2.close(); }
+    console.log('PASS console model switch persists config.json and follows the new model reasoning tiers');
+  } catch (error) { failures++; console.error('FAIL console model switch:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
 }
 

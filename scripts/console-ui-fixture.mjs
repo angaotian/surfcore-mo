@@ -299,6 +299,17 @@ export function makeFixtureState() {
     },
     roleInjectMax: 6000,
     dshEffort: 'max',
+    dshProvider: 'deepseek-official',
+    dshModel: 'deepseek-flash',
+    // 模型目录（对应 DSH 的 session/modelCatalog）：两个提供方，覆盖「切提供方要跟着换模型」。
+    dshProviders: [
+      { id: 'deepseek-official', name: 'DeepSeek 官方', models: [
+        { id: 'deepseek-flash', name: 'DeepSeek-V41-Flash', efforts: ['low', 'high', 'max'], defaultEffort: 'high' },
+      ] },
+      { id: 'fox-api-deepseek', name: '中转站', models: [
+        { id: 'deepseek-v4.1-flash-1017', name: 'deepseek-v4.1-flash-1017', efforts: ['low', 'high', 'max'], defaultEffort: 'max' },
+      ] },
+    ],
     whitelist: { allow: { groups: [123456789, 100003], private: [100001] }, deny: { groups: [], private: [] }, ownerQQ: '100001' },
     sessions: [
       { key: 'group:123456789', sessionId: 'demo-community-20260920', owner: false },
@@ -436,14 +447,16 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true, backups: [{ file: `${preset}.agent.cordis.yml.fixture`, mtime: Date.parse(timestamp) }] });
           }
           case '/api/dsh/model': return json({
-            provider: 'deepseek-official',
-            model: 'deepseek-flash',
+            provider: state.dshProvider,
+            model: state.dshModel,
             reasoningEffort: state.dshEffort,
             options: ['low', 'high', 'max'],
             labels: { low: { name: 'Low', description: 'routine' }, high: { name: 'High', description: 'default balance' }, max: { name: 'Max', description: 'hardest tasks' } },
             default: 'max',
             providerDefault: 'high',
             catalogSource: 'dsh',
+            providers: state.dshProviders,
+            catalogAvailable: true,
             globalSideEffect: true,
           });
           case '/api/whitelist': return json(state.whitelist);
@@ -542,6 +555,12 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             return json({ ok: true, restoredFrom: `${preset}.agent.cordis.yml.fixture`, requiresRestart: true });
           }
           case '/api/dsh/effort': state.dshEffort = body.reasoningEffort; return json({ ok: true, reasoningEffort: body.reasoningEffort });
+          case '/api/dsh/model': {
+            if (body.provider) state.dshProvider = String(body.provider);
+            if (body.model) state.dshModel = String(body.model);
+            if (body.reasoningEffort) state.dshEffort = String(body.reasoningEffort);
+            return json({ ok: true, provider: state.dshProvider ?? 'deepseek-official', model: state.dshModel ?? 'deepseek-flash', reasoningEffort: state.dshEffort ?? 'max', effortAdjusted: false, catalogChecked: true });
+          }
           case '/api/role-mode': state.roleMode = body.mode; return json({ ok: true });
           case '/api/whitelist': state.whitelist = body; return json({ ok: true });
           case '/api/social': state.social = body; return json({ ok: true });

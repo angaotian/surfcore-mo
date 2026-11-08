@@ -486,7 +486,7 @@
 | 总览 | 四个模式卡（聊天/封闭 Agent/一代/二代），点即保存 | `POST /api/mode {mode, closedAgentPreset}` | `1801-1808`、`2863-2879` |
 | 总览 | 封闭 Agent 的 DSH preset 下拉 | `GET /api/presets` | `2843-2861` |
 | 总览 | 静默开关（静默时群友消息不投递） | `POST /api/role-mode {mode:"silent"\|"active"}` | `2559-2565`、`3258-3259` |
-| 总览 | DSH 模型与思考强度（下一句生效，写入全局默认） | `GET /api/dsh/model`、`POST /api/dsh/effort` | `2567-2578`、`3053-3082`、`3248-3257` |
+| 总览 | DSH 模型（提供方 + 模型下拉，下一句生效）与思考强度 | `GET /api/dsh/model`、`POST /api/dsh/model`、`POST /api/dsh/effort` | `2566-2584`、`3063-3150`、`3315-3338` |
 | 会话 | 会话映射表 + 单条「清除上下文」 | `GET /api/sessions`、`POST /api/session/reset {key}` | `3095-3116` |
 | 会话 | 挂起审批 / 提问列表（只读） | `GET /api/pending` | `3118-3135` |
 | 人格 | 人格列表、载入编辑、新建/改名/删除/副本 | `GET /api/roles`、`/api/roles/content?name=`、`/create`、`/update`、`/rename`、`/delete` | `2937-3003`、`3152-3196` |
@@ -572,7 +572,7 @@
 | Token | 额度上限（`client.js:3823-3944`） | 用量/花费看板 + 清空账本（`console.html:2661-2712`） | 不同维度、不冲突；命名容易混（控制台还有「控制台访问令牌」） |
 | 重启 | 概览启动/重启/停止 + 底部「保存并重启」+ QQ 页「重启 QQ 桥接」（`client.js:1154-1157`、`client.js:4289`、`client.js:1817-1821`） | 「桥接控制」一个按钮（`console.html:2632-2642`） | 语义相同（`/bridge restart` vs `/api/restart`），三处入口 |
 | B站 自动化/鱼群/分享/桌宠/目的 | 全部在设置页 | 无 | 权威在设置页 |
-| 模型与思考强度 | QQ 参数 `dsh.model` / `dsh.reasoningEffort`（`client.js:695-696`） | 独立卡片，且会写 DSH **全局**默认（`console.html:2567-2578`、`console.html:3075-3077`） | 同名概念、不同层：控制台改全局、设置页改 QQ 会话参数；调完一处会让人觉得另一处「没生效」 |
+| 模型与思考强度 | QQ 页顶部「DSH 模型」卡：提供方 / 模型 / 思考强度三个下拉（`client.js:2764-2861`，保存走 `POST /model` → 桥接 `POST /api/dsh/model`，热生效、不用重启）；「高级设置 → 连接与身份」里还有三个文本框 `dsh.provider` / `dsh.model` / `dsh.reasoningEffort`（`client.js:947-949`，随整份配置保存，要重启桥接） | 独立卡片，且会写 DSH **全局**默认（`console.html:2567-2578`、`console.html:3075-3077`） | 同名概念、不同层：控制台与设置页的卡都走桥接接口（写 `dsh.*` 并热更新），设置页高级设置里的文本框是兜底通道（桥接没在跑时仍可改，但要重启）；两张卡调完一处，另一处要刷新才看到新值 |
 
 **同键双写清单**（这些键在两边都有输入框，改前先确认另一处不会被顺手覆盖）：
 
@@ -583,6 +583,7 @@
 - `social.*`：`client.js:729-758` ↔ `console.html:4125-4153`（控制台按 POST body 逐字段提交，`console.html:4123-4157`）。
 - `socialV2.*`：`client.js:759-877` ↔ `console.html:3458-3552`（控制台按 15 个分组整体提交；表单里没有的子键不会出现在 body 里，是否保留取决于后端合并策略，改前先看 `saveV2Config` 的 body 形状）。
 - `slang.*`：`client.js:891-900` ↔ `console.html:4503-4513`。
+- `dsh.provider` / `dsh.model` / `dsh.reasoningEffort`：设置页卡（`client.js:2764-2861`）与「高级设置」文本框（`client.js:947-949`）↔ 控制台卡（`console.html:2566-2584`）。**三处都写同一份 `<surfcore>/config.json`**：卡走桥接接口（连 `cfg` 一起热更新，下一句消息生效），文本框随整份配置保存（要重启桥接）。设置页保存成功后会把新值同步进表单（`client.js:2818-2820`），免得随后点底部「保存」把旧值写回去。
 - `roles/<name>.md`：`client.js:2524-2531` ↔ `console.html:3163-3164`（同一个文件，后写者覆盖）。
 - 语音包目录与 `voice/rules`：`client.js:3020-3037` ↔ `console.html:5310-5398`。
 

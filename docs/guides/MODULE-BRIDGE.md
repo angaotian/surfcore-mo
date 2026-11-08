@@ -589,10 +589,18 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 
 | 方法 | 路径 | 令牌 | 副作用 |
 |---|---|---|---|
-| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单） | `src/bridge.js:4780-4825` |
-| POST | `/api/dsh/effort` | C | 写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:4827-4842` |
+| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单；额外返回 `providers` 供切换用） | `src/bridge.js:5398-5449` |
+| POST | `/api/dsh/effort` | C | 写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:5451-5472` |
+| POST | `/api/dsh/model` | C | 写 `config.json` 的 `dsh.provider/model/reasoningEffort` + 热更新 + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:5474-5533` |
 
-`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`src/bridge.js:4821-4823`）。
+`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`src/bridge.js:5447`）。
+
+切换模型（`POST /api/dsh/model`）比思考强度多两件事：
+
+- **校验**：读 `session.modelCatalog`（经 `describeModelProviders()` 摊平，`src/bridge.js:3254`）核对提供方 / 模型是否存在，拼错直接 400 并列出可选值，而不是让它变成每回合两行 `设置会话模型失败`。DSH 没启动（目录读不到）时**跳过校验**照写，保留「DSH 挂了也能改配置」的恢复路径。
+- **档位跟随**：新模型不支持当前思考档位时自动落到它公布的默认档（回包 `effortAdjusted: true`），否则换完模型每回合都会 `UNSUPPORTED_REASONING_EFFORT`。
+
+两者都不用重启桥接：`cfg.dsh` 是启动时读进来的内存副本，接口会一并更新它并 `modelSelectionEpoch++`，已有会话在**下一条消息**重新绑定。只有手改 `config.json` 才要重启（`cfg` 只在启动时读一次）。
 
 ### 6.7 安全 / 令牌 / 问候 / 目的 / 测试
 
