@@ -1,14 +1,14 @@
-# 出处与本地定制说明（SurfCore Pro · angaotian/surfcore-pro）
+# 出处与本地定制说明（SurfCore 魔改 · angaotian/surfcore-mo）
 
 ## 一句话
 
-本仓库 **[angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro) 是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork**，基线为上游 **v0.8.9**（上游 `main` 头 `0ce8580`）。
-仓库名故意不重名：上游叫 `surfcore`，本仓库叫 `surfcore-pro`（显示名 **SurfCore Pro**）。
+本仓库 **[angaotian/surfcore-mo](https://github.com/angaotian/surfcore-mo) 是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork**，基线为上游 **v0.8.9**（上游 `main` 头 `0ce8580`）。
+上游叫 `surfcore`，本仓库叫 `surfcore-mo`（显示名 **SurfCore 魔改**）—— 就是原版上的魔改分支，不是原版的替代品、也不比原版"高级"。
 在其之上保留了一套本地追加功能。**上游原版 v0.8.9 里没有这些追加功能**；想看纯上游请直接去上游仓库。
 
 - 上游作者 / 版权：`Mieksido`
 - 本 fork 维护者：`angaotian`（仓库内 `user.name` / `user.email` 已配置为该账号）
-- 显示版本：`0.8.9-pro`（`package.json` 的 `version` 仍是 `0.8.9`，因为更新校验比对上游版本号）
+- 显示版本：`0.8.9-mo`（`package.json` 的 `version` 仍是 `0.8.9`，因为更新校验比对上游版本号）
 - 许可：沿用上游 MIT，不额外附加限制
 - 合并提交带脚注：`上游来源: Mieksido/surfcore（v0.8.4 → v0.8.9）；本地自定义与冲突取舍由 angaotian 完成。`
 

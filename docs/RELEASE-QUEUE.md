@@ -22,7 +22,7 @@
 
 **覆盖提交**：`9c4d865`
 **建议**：仍是 `0.8.9` 本地定制版；这两项属于「补齐已有功能的入口 / 修潜在故障」，不需要单独发版
-**当前版本**：`package.json` `0.8.9`；`main` 在 `angaotian/surfcore-pro`（fork），未 tag
+**当前版本**：`package.json` `0.8.9`；`main` 在 `angaotian/surfcore-mo`（fork），未 tag
 
 **改了什么**：
 - `plugins/surfcore/lib/client.js`：`QQ_FIELDS` 新增「思考与读法」分组（挂在「人格与提示」分类），三个字段 `socialV2.think.enabled` / `.style` / `.maxPoints`；顺带导出 `QQ_ADV_CATEGORIES` 供契约测试断言"分组已挂分类"。
@@ -53,7 +53,7 @@ case：docs/cases/2026-11-08-think-settings-and-console-token.md
 
 **覆盖提交**：`5519751`（含 WIP `e792677` / merge `ab07d88` / case `e9acbc7`）；其后 `4170a3f` 重出安装清单 + 本批末尾修 `test-update-apply-result.mjs` 抖动
 **建议**：**已是上游 0.8.9**；本地这批是「0.8.9 + 本地功能」的合体，若要对外发，版本号由发布会话定（建议 0.9.0，因为本地新增了 favor/meme-pack/think/outreach 四个能力面）
-**当前版本**：`package.json` 已随合并变成 `0.8.9`，已推到 `angaotian/surfcore-pro`（与上游 `Mieksido/surfcore` 同名仓库，`main` 头 `f8d1848`），未 tag
+**当前版本**：`package.json` 已随合并变成 `0.8.9`，已推到 `angaotian/surfcore-mo`（与上游 `Mieksido/surfcore` 同名仓库，`main` 头 `f8d1848`），未 tag
 
 **改了什么**：
 - 三方合并上游 v0.8.4→v0.8.9（352 文件，+36620/-4199），14 个冲突文件逐个取舍：本地功能优先、上游架构与措辞跟进。
@@ -67,7 +67,7 @@ case：docs/cases/2026-11-08-think-settings-and-console-token.md
 
 **没做**：
 - 没跑真实 QQ 在线联调（落地时桥接没在运行）；没验证向量记忆的云端 embedding 真调用（要密钥和配额）。
-- 本地 `main` 已推到自己账号的 fork `angaotian/surfcore-pro`（作为上游 `Mieksido/surfcore` 的 fork，`main` 领先上游 8 个提交 / 落后 0）；未打 tag。
+- 本地 `main` 已推到自己账号的 fork `angaotian/surfcore-mo`（作为上游 `Mieksido/surfcore` 的 fork，`main` 领先上游 8 个提交 / 落后 0）；未打 tag。
 
 **验证**：
 ```text

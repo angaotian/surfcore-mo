@@ -1,18 +1,19 @@
-# SurfCore Pro —— 上游 surfcore 的本地定制版（QQ × B站 × 桌宠）
+# SurfCore — 魔改分支（上游 surfcore v0.8.9 的本地定制稿）
 
 **中文** | [English](README.en.md)
 
 ## 🧭 出处：先读这一段
 
-> **本仓库 `angaotian/surfcore-pro` 是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork，不是上游原版。**
-> 仓库名故意不重名：上游叫 **`surfcore`**，本仓库叫 **`surfcore-pro`**（显示名 **SurfCore Pro**）。
+> **本仓库是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork，是原版的魔改分支，不是原版本身。**
+> 平起平坐、没有高下：上游叫 **`surfcore`**，本仓库叫 **`surfcore-mo`**（魔改版显示名 **SurfCore 魔改**）。
+> 上游是本体，这里只是"在原版上又糊了几笔"的改装车——夸本仓库不等于贬原版。
 >
 > | | |
 > | --- | --- |
-> | 上游 | [Mieksido/surfcore](https://github.com/Mieksido/surfcore)（作者 `Mieksido`，MIT） |
+> | 上游（原版） | [Mieksido/surfcore](https://github.com/Mieksido/surfcore)（作者 `Mieksido`，MIT） |
 > | 基线版本 | 上游 **v0.8.9**（上游 `main` 头 `0ce8580`） |
-> | 本仓库 | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro)（维护者 `angaotian`） |
-> | 显示版本 | `0.8.9-pro`（`package.json` 的 `version` 仍写 `0.8.9`，因为更新校验比对的是上游版本号） |
+> | 本仓库（魔改） | [angaotian/surfcore-mo](https://github.com/angaotian/surfcore-mo)（维护者 `angaotian`） |
+> | 显示版本 | `0.8.9-mo`（`package.json` 的 `version` 仍写 `0.8.9`，因为更新校验比对的是上游版本号） |
 >
 > **上游没有的追加功能 7 项、改动过的上游行为 7 处**——逐条列在下面的「多了什么」一节。
 > 上游 v0.8.9 的能力（向量记忆全链路、会话滚动、唤醒过滤、出站队列、跟随 DSH 默认模型等）**全部保留**。
@@ -62,7 +63,7 @@ npm run test:favor test:think test:outreach test:meme-pack   # 本地功能
 
 | | |
 | --- | --- |
-| 版本 | `0.8.9-pro`（基线上游 `0.8.9`） |
+| 版本 | `0.8.9-mo`（基线上游 `0.8.9`） |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
 | 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
@@ -77,7 +78,7 @@ npm run test:favor test:think test:outreach test:meme-pack   # 本地功能
 
 把这句话发给 DSH：
 
-> 帮我安装 https://github.com/angaotian/surfcore-pro ，按 README 的步骤来。
+> 帮我安装 https://github.com/angaotian/surfcore-mo ，按 README 的步骤来。
 
 > 想装**纯上游原版**就换成 `https://github.com/Mieksido/surfcore`；安装步骤完全一样
 > （本仓库只在上游之上做追加，没有改安装流程）。

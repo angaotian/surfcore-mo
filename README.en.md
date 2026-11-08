@@ -1,20 +1,26 @@
-# SurfCore Pro — QQ ↔ DeepSeek Harness Bridge + QQ × Bilibili plugin (local fork of surfcore)
+# SurfCore — a 魔改 (mod) branch: custom patches on top of upstream surfcore v0.8.9
+
+> QQ × Bilibili plugin plus what this fork adds: relationship system (`favor`), chain-of-thought
+> reading (`think`), proactive-outreach gate, `meme-pack` manager, Anysearch as first search hop,
+> a standalone console page, and a hardened QQ MCP server. Upstream is the original — this is just
+> a modded build of it.
 
 ## 🧭 Provenance — read this first
 
-> **This repository (`angaotian/surfcore-pro`) is a fork of [Mieksido/surfcore](https://github.com/Mieksido/surfcore).
-> It is not upstream, and it deliberately does not share upstream's name**: upstream is **`surfcore`**,
-> this fork is **`surfcore-pro`** (display name **SurfCore Pro**).
+> **This repo (`angaotian/surfcore-mo`) is a fork of [Mieksido/surfcore](https://github.com/Mieksido/surfcore):
+> the original project, modded. It is not upstream itself.**
+> Neither is "better": upstream is **`surfcore`** (the base), this is **`surfcore-mo`**
+> (display name **SurfCore 魔改** — "SurfCore modded"). Praising this repo is not a knock on upstream.
 >
 > | | |
 > | --- | --- |
-> | Upstream | [Mieksido/surfcore](https://github.com/Mieksido/surfcore) — author `Mieksido`, MIT |
+> | Upstream (original) | [Mieksido/surfcore](https://github.com/Mieksido/surfcore) — author `Mieksido`, MIT |
 > | Base version | upstream **v0.8.9** (upstream `main` head `0ce8580`) |
-> | This repo | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro) — maintainer `angaotian` |
-> | Displayed version | `0.8.9-pro` (`package.json` `version` stays `0.8.9`, because update checks compare upstream version numbers) |
+> | This repo (mod) | [angaotian/surfcore-mo](https://github.com/angaotian/surfcore-mo) — maintainer `angaotian` |
+> | Displayed version | `0.8.9-mo` (`package.json` `version` stays `0.8.9`, because update checks compare upstream version numbers) |
 >
-> **Added on top of upstream v0.8.9: 7 features upstream does not have, plus 7 upstream behaviours changed.**
-> Both are listed in the "What's extra" section right below. Everything upstream v0.8.9 ships
+> This is a build on top of upstream v0.8.9 with 7 extra features and 7 changed upstream behaviours
+> — see the "What's extra" section right below. Everything upstream v0.8.9 ships
 > (vector memory, session rollover, wake filtering, outbox, following the DSH default model, …) is **kept**.
 > Per-file comparison and how the merge was done: **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
 
