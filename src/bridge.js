@@ -5838,6 +5838,10 @@ let stickerImportStamps = [];
             // 目录不可用时只回当前模型，前端不要凭旧缓存瞎给选项。
             models: choices.models,
             providers: choices.providers,
+            // 图片能力的强制档位（auto/true/false）：目录里没登记 modality 的第三方模型，
+            // 用户可以在设置页强制「支持/不支持」。卡片要据此显示真实生效值，
+            // 否则目录说「未知」而实际已经在发 image block，两边对不上。
+            visionImageInput: String(cfg.socialV2?.vision?.imageInput ?? 'auto').toLowerCase(),
             // 本地独立控制台（public/console.html）用：嵌套的「提供方 → 模型」清单。
             providerGroups: providers,
             catalogAvailable: providers.length > 0,
@@ -5983,8 +5987,21 @@ let stickerImportStamps = [];
             ? findCatalogModel(catalogChoices(catalog, { priceTable: resolvePriceTable(cfg.pricing) }).models, provider, model)
             : null;
           const warnings = [];
-          if (picked?.imageInput === false) warnings.push('这个模型未声明图片输入：QQ 图片/表情将只发文字标签，不会发 image block');
-          if (picked && picked.imageInput == null) warnings.push('模型目录没有声明图片能力：未知，按文字兜底更安全');
+          // 「图片能力」设置页里有 auto/true/false 三档，可以强制覆盖目录（第三方模型目录里
+          // 根本没登记 modality，永远查不出"能看图"）。强制之后就不能再说"按文字兜底"——
+          // 那句话描述的是 auto 的行为，说了只会让人以为设置没生效（2026-11-08 用户就这样被绕回去）。
+          const visionMode = String(cfg.socialV2?.vision?.imageInput ?? 'auto').toLowerCase();
+          const effectiveImageInput = visionMode === 'true' ? true
+            : visionMode === 'false' ? false
+              : (picked?.imageInput ?? null);
+          if (visionMode === 'true') {
+            if (picked?.imageInput !== true) warnings.push('已在「图片能力」里强制按「支持图片输入」处理：目录没有声明这个模型，若它其实不支持，QQ 图片会报错或被忽略');
+          } else if (visionMode === 'false') {
+            warnings.push('已在「图片能力」里强制关闭图片输入：QQ 图片/表情只发文字标签');
+          } else {
+            if (picked?.imageInput === false) warnings.push('这个模型未声明图片输入：QQ 图片/表情将只发文字标签，不会发 image block');
+            if (picked && picked.imageInput == null) warnings.push('模型目录没有声明图片能力：未知，按文字兜底更安全；确认它能看图就去「图片能力」里选「支持图片输入」');
+          }
           if (picked?.price?.tier === 'expensive') warnings.push('这个模型比默认 flash 贵不少，请留意 token 花费');
           sendJson({
             ok: true,
@@ -5997,7 +6014,8 @@ let stickerImportStamps = [];
             reasoningEffort: effort,
             effortAdjusted,
             catalogChecked: providers.length > 0,
-            imageInput: picked?.imageInput ?? null,
+            imageInput: effectiveImageInput,
+            visionImageInput: visionMode,
             price: picked?.price ?? null,
             globalSideEffect: true,
             requested: { provider, model, reasoningEffort: effort },

@@ -3313,7 +3313,14 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
         const base = id === "low" ? "low（最省，日常聊天）" : id === "high" ? "high（平衡）" : id === "max" ? "max（最烧，复杂任务）" : id;
         return custom ? `${base} · ${custom}${desc ? `：${desc}` : ""}` : base;
       };
-      const imageText = current?.imageInput === true ? "支持图片" : current?.imageInput === false ? "仅文本（图片走文字兜底）" : "图片能力未知";
+      // 目录里的 modality 只是"声明"，用户可以强制覆盖；卡片要显示真正生效的那档，
+      // 否则会出现"目录说未知 / 实际在发 image block"的自相矛盾（2026-11-08）。
+      const visionMode = String(info?.visionImageInput ?? "auto").toLowerCase();
+      const imageText = visionMode === "true"
+        ? "已强制支持图片"
+        : visionMode === "false"
+          ? "已强制仅文本"
+          : current?.imageInput === true ? "支持图片" : current?.imageInput === false ? "仅文本（图片走文字兜底）" : "图片能力未知";
       const priceText = current?.price?.label ? `${current.price.label}` : "价目表未登记";
       const fallbackOnly = !models.length;
       const lastApply = info?.lastApply ?? null;
