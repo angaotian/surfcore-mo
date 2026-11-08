@@ -1,5 +1,12 @@
 # SurfCore — QQ ↔ DeepSeek Harness Bridge + QQ × Bilibili plugin
 
+> 🧭 **Provenance**: this repository is a **fork of [Mieksido/surfcore](https://github.com/Mieksido/surfcore)**,
+> based on upstream **v0.8.9** (`0ce8580`). Upstream author: `Mieksido`; maintainer of this fork: `angaotian`.
+> It keeps a set of **local-only additions that upstream does not have** (relationship system `favor`,
+> chain-of-thought reading `think`, proactive-outreach gate, meme-pack manager, Anysearch as the first
+> search hop, a standalone console page, and a hardened QQ MCP server). Want plain upstream? Go to the
+> upstream repository. Per-file comparison: **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
+
 > ℹ️ This English page is a **condensed overview**. The full, code-level documentation
 > (architecture, every module, voice / pet / Bilibili subsystems, configuration and state files,
 > capability boundaries) is written in Chinese under [`docs/guides/`](docs/guides/) —

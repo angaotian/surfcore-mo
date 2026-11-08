@@ -2,6 +2,7 @@
 
 > 根目录只留 `README.md` / `README.en.md` / `RULES.md` 三个文档，其余全部在本目录下。
 > 仓库目录结构与 `scripts/` 命名约定见 **[FOLDER_MAP.md](FOLDER_MAP.md)**。
+> **本仓库出处与本地追加功能**见 **[PRO-CUSTOM.md](PRO-CUSTOM.md)**（上游 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) v0.8.9 的 fork）。
 >
 > **状态标记**：✅ 仍然有效（按它做就对） · ⚠️ 部分过时（见备注） · 🗄️ 已被取代（保留作背景）
 

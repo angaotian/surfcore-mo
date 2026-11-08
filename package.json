@@ -4,6 +4,12 @@
   "private": true,
   "license": "MIT",
   "description": "SurfCore — QQ ↔ DeepSeek Harness bridge + QQ/B站 merged plugin: one repo, one settings window, QQ + Bilibili + QQ presets.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/angaotian/surfcore.git"
+  },
+  "homepage": "https://github.com/Mieksido/surfcore",
+  "author": "angaotian（fork of Mieksido/surfcore，基线上游 v0.8.9）",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
