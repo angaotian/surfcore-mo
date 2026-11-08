@@ -17,6 +17,37 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-08 21:35 · 设置页补 think 入口 + 控制台令牌对齐
+<!-- release-batch: start=2026-11-08T21:00+08:00 end=2026-11-08T21:40+08:00 commits=PENDING -->
+
+**覆盖提交**：见下方交接块（本批次提交后回填）
+**建议**：仍是 `0.8.9` 本地定制版；这两项属于「补齐已有功能的入口 / 修潜在故障」，不需要单独发版
+**当前版本**：`package.json` `0.8.9`；`main` 在 `angaotian/surfcore`（fork），未 tag
+
+**改了什么**：
+- `plugins/surfcore/lib/client.js`：`QQ_FIELDS` 新增「思考与读法」分组（挂在「人格与提示」分类），三个字段 `socialV2.think.enabled` / `.style` / `.maxPoints`；顺带导出 `QQ_ADV_CATEGORIES` 供契约测试断言"分组已挂分类"。
+- `src/bridge.js`：`POST /api/socialV2/config` 把 `think` 纳入子对象类型校验，并用 `normalizeThinkConfig()` 收口（写盘的就是运行时真正生效的值）；`startConsoleServer()` 在 `tokenValid` 时把 `state/console-token` 对齐成 `config.consoleToken`（此前两份分叉，拿文件里的令牌请求控制台恒 401）。
+- `plugins/surfcore/scripts/test-client-contract.mjs`：+4 组断言（分组存在、三个路径精确、分类挂载、风格选项正好四个值）。
+- 运行时数据：`config.json` 显式写入 `socialV2.think = {enabled:true, style:"auto", maxPoints:3}`（原先没有这个键，UI 上开关是空白，看着像关着而实际开着）；`state/console-token` 对齐成 32 位生效令牌。
+
+**验证**：
+- `node scripts/test-audit.mjs` → `Audit suite: 153/153 scripts passed.`（exit=0，改完后连跑两次都过）
+- `plugins/surfcore/scripts/test-client-contract.mjs` → `client contract tests OK`
+- `scripts/test-think.mjs` 10 项、`scripts/test-favor.mjs`、`scripts/test-model-api.mjs` 无回归
+- **没验证到的**：设置页实际渲染（`scripts/test-console-ui.mjs` 需要 Playwright，本机没装），需重启 DSH 后人工点一遍
+
+**交接块（发布会话直接抄）**：
+```
+批次 2026-11-08 21:35 · 设置页补 think 入口 + 控制台令牌对齐
+提交：<回填>
+文件：plugins/surfcore/lib/client.js、src/bridge.js、plugins/surfcore/scripts/test-client-contract.mjs、
+      docs/cases/2026-11-08-think-settings-and-console-token.md、docs/cases/README.md、docs/RELEASE-QUEUE.md、
+      release/install-manifest.json
+case：docs/cases/2026-11-08-think-settings-and-console-token.md
+验证：test-audit 153/153；client-contract OK；test-think/test-favor/test-model-api 无回归
+生效：think 下次唤醒即生效；设置页字段需重启 DSH；令牌对齐在桥接启动时执行
+```
+
 ### 批次 2026-11-08 18:50 · 合并上游 v0.8.9（本地自定义全保留）
 <!-- release-batch: start=2026-11-08T15:00+08:00 end=2026-11-08T19:10+08:00 commits=e792677,ab07d88,e9acbc7,5519751,4170a3f -->
 

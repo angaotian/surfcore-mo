@@ -487,4 +487,23 @@ assert.ok(source.includes("向量记忆使用说明（人话版）"), "向量记
 assert.ok(source.includes("为多个模型重建索引"), "使用说明必须讲清多模型重建入口");
 assert.ok(source.includes("（已有索引）"), "多模型选择必须标注已有索引");
 assert.ok(source.includes("（待补链）"), "百度/UC 必须标待补链");
+// ── 思考与读法（think，2026-11-08）──
+// 背景：src/think.js 早就读 config.json 的 socialV2.think，但设置页没有入口，
+// 用户只能手写配置才知道「先读懂再回」是可以关/调风格的。
+const thinkGroup = client.QQ_FIELDS.find((g) => g.group === '思考与读法');
+assert.ok(thinkGroup, '设置页缺少「思考与读法」分组（think 只能手写配置）');
+const thinkPaths = (thinkGroup?.fields ?? []).map((f) => f.path.join('.'));
+assert.deepEqual(
+  thinkPaths,
+  ['socialV2.think.enabled', 'socialV2.think.style', 'socialV2.think.maxPoints'],
+  '思考与读法必须且只能绑这三个键（与 src/think.js normalizeThinkConfig 对齐）',
+);
+const thinkCat = client.QQ_ADV_CATEGORIES.find((c) => c.title === '人格与提示');
+assert.ok(thinkCat?.members?.includes('思考与读法'), '「思考与读法」要挂在「人格与提示」分类下，否则设置页看不到');
+const thinkStyle = thinkGroup?.fields?.find((f) => f.path.join('.') === 'socialV2.think.style');
+assert.deepEqual(
+  (thinkStyle?.options ?? []).map((o) => o[0]),
+  ['auto', 'brief', 'chatty', 'dry'],
+  '读法风格下拉必须正好是 normalizeThinkConfig 认的四个值',
+);
 console.log('client contract tests OK');

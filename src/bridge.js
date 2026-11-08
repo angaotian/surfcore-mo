@@ -98,7 +98,7 @@ import {
   observeMessage as observeFavorMessage,
   promptBlock as buildFavorPromptBlock,
 } from './favor.js';
-import { buildThinkBlock } from './think.js';
+import { buildThinkBlock, normalizeThinkConfig } from './think.js';
 import {
   effectiveVectorMemoryConfig, embedTexts, normalizeVectorMemoryConfig, rankVectorMemories,
   readVectorIndex, renderVectorRecallBlock, resolveVectorMemoryPaths,
@@ -4665,6 +4665,23 @@ let stickerImportStamps = [];
     if (!consoleToken) throw new Error('控制台令牌为空：拒绝以无鉴权方式启动控制台 API');
     if (!tokenValid && configuredToken) log(`控制台 config.consoleToken 长度/字符不合法，已忽略并回退到自动生成令牌`);
     if (!configuredToken) log(`控制台未配置 consoleToken，已自动生成：${String(consoleToken).slice(0, 6)}…（完整值保存在 state/console-token）`);
+    // 两份令牌对齐：state/console-token 是「config 没写令牌」时的兜底，也是插件 / 脚本读令牌的
+    // 回退来源。历史上出现过 config 里是 32 位、文件里还留着旧的 48 位 —— 于是拿文件里的值去请求
+    // 控制台永远 401，而真正的令牌在 config 里，排查时极容易被误导（2026-11-08 就踩了一次）。
+    // 生效令牌确定后顺手把文件对齐，让两处永远是同一个值。
+    if (tokenValid) {
+      const tokenFile = path.join(STATE_DIR, 'console-token');
+      let onDisk = '';
+      try { onDisk = fs.readFileSync(tokenFile, 'utf8').trim(); } catch {}
+      if (onDisk !== consoleToken) {
+        try {
+          atomicWriteText(tokenFile, consoleToken);
+          log('state/console-token 与 config.consoleToken 不一致，已按生效值对齐');
+        } catch (e) {
+          log(`state/console-token 对齐失败：${e.message}`);
+        }
+      }
+    }
     // 二代会话级隔离：MCP 工具调用时若带 x-agent-token，则必须匹配该会话的 agentToken。
     // 控制台/管理端请求不带此头，仍走 consoleToken 管理通道。
     //
@@ -6338,7 +6355,7 @@ let stickerImportStamps = [];
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
-          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'tokenGuard', 'history']) {
+          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'tokenGuard', 'history', 'think']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
@@ -6346,6 +6363,11 @@ let stickerImportStamps = [];
           if (merged.autoReplyCheckMs !== undefined) {
             const n = Number(merged.autoReplyCheckMs);
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
+          }
+          // think（读法）：设置页三个字段是「路径写入」的，可能出现 style 拼错、maxPoints 传成字符串。
+          // 这里用与运行时同一个归一化函数收口，写盘的就是真正会生效的那份值。
+          if (body.think !== undefined) {
+            merged.think = normalizeThinkConfig(merged.think);
           }
           // tools：只接受布尔开关
           const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];

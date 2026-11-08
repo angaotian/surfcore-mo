@@ -1387,6 +1387,11 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("webSearch.anysearch.freshness", "默认时效", "不限定就用上游默认排序", "select", { options: [["", "不限定"], ["day", "一天内"], ["week", "一周内"], ["month", "一月内"], ["year", "一年内"]] }),
         F("webSearch.anysearch.contentTypes", "默认内容类型", "留空=通用；可填 news,doc,code 等，逗号分隔", "list"),
       ]},
+      { group: "思考与读法", note: "「先读明白再开口」：每次被消息叫醒时，先在心里过一遍要点再回。只有「有人说了话」才注入——主动搭话、潜水收尾这类自己开口的场景不带这段。担心费 token 可以先调小要点数，再考虑整体关掉。", fields: [
+        F("socialV2.think.enabled", "启用思维链式读法", "默认开。每次被消息叫醒先整理要点再回复；关掉更省 token，但多人对话容易答错人、漏问题", "switch"),
+        F("socialV2.think.style", "读法风格", "auto=按人格卡自动判断（关键词匹配不到就用 brief）", "select", { options: [["auto", "auto（跟随人格卡）"], ["brief", "brief（中性 · 最短）"], ["chatty", "chatty（口语 · 可接梗）"], ["dry", "dry（冷淡 · 只说最有用那句）"]] }),
+        F("socialV2.think.maxPoints", "最多记几个要点", "2–5；越大越细，也越费 token", "number", { min: 2, max: 5 }),
+      ]},
     ];
 
     const TOOL_LABELS = {
@@ -1401,7 +1406,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
 
     const QQ_ADV_CATEGORIES = [
       { title: "接入与身份", members: ["连接与身份", "SnowLuma", "控制台", "安全通知"] },
-      { title: "人格与提示", members: ["人格与注入", "一代仿真（reserved）", "二代仿真（reserved2）"] },
+      { title: "人格与提示", members: ["人格与注入", "思考与读法", "一代仿真（reserved）", "二代仿真（reserved2）"] },
       { title: "群与安全", members: ["群管理", "鱼群判定关键词（QQ）", "鱼群保护（QQ）", "Token 防爆破"] },
       { title: "唤醒与收尾", members: ["唤醒与潜水", "二代 · 唤醒与潜水", "对话收尾", "二代 · 对话收尾判断", "二代 · 上线补历史消息"] },
       { title: "发送与上下文", members: ["二代 · 发送与节奏", "二代 · 等待与上下文", "二代 · 主动与反馈"] },
@@ -8371,6 +8376,9 @@ F("socialV2.voice.ffmpegPath", "ffmpeg 路径", "留空走 PATH", "text", { wide
     exports.inject = inject;
     exports.QQBIliWhaleSection = QQBIliWhaleSection;
     exports.QQ_FIELDS = QQ_FIELDS;
+    // 分组目录：契约测试要确认每个新建的高级参数分组都挂进了某个分类，
+    // 否则字段虽然存在、设置页却看不到（2026-11-08 加「思考与读法」时踩到过）。
+    exports.QQ_ADV_CATEGORIES = QQ_ADV_CATEGORIES;
     exports.BILI_FIELDS = BILI_FIELDS;
     exports.QQ_BILI_SHARE_FIELDS = QQ_BILI_SHARE_FIELDS;
     // 仅供 Node 契约测试验证路径归一化；浏览器运行时不使用。
