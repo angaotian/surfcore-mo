@@ -1,25 +1,42 @@
-# SurfCore — 给 DSH agent 一个真实的身份：QQ × B站 × 桌宠
+# SurfCore Pro —— 上游 surfcore 的本地定制版（QQ × B站 × 桌宠）
 
 **中文** | [English](README.en.md)
+
+## 🧭 出处：先读这一段
+
+> **本仓库 `angaotian/surfcore-pro` 是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork，不是上游原版。**
+> 仓库名故意不重名：上游叫 **`surfcore`**，本仓库叫 **`surfcore-pro`**（显示名 **SurfCore Pro**）。
+>
+> | | |
+> | --- | --- |
+> | 上游 | [Mieksido/surfcore](https://github.com/Mieksido/surfcore)（作者 `Mieksido`，MIT） |
+> | 基线版本 | 上游 **v0.8.9**（上游 `main` 头 `0ce8580`） |
+> | 本仓库 | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro)（维护者 `angaotian`） |
+> | 显示版本 | `0.8.9-pro`（`package.json` 的 `version` 仍写 `0.8.9`，因为更新校验比对的是上游版本号） |
+>
+> **本仓库在上游 v0.8.9 之上追加了这些上游没有的功能**（纯上游请直接去上游仓库）：
+>
+> - 关系系统 `favor`（好感 + 亲密两轴、阶段、确定性打分）
+> - 思维链式读法 `think`（先要点 → 总体判断 → 未决问题）
+> - 主动开口闸门 `outreach`（能不能出声、上次出声有没有人接）
+> - 表情包管理器 `meme-pack`（兼容 AstroBot `meme_manager` 目录格式）
+> - 联网检索第一跳 **Anysearch**（`auto` 四跳：Anysearch → DeepSeek Search API → DeepSeek 模型 → Bing）
+> - 独立控制台页（`public/console.html`，按 `providerGroups` 嵌套清单展示）
+> - 安全版 QQ MCP server（`src/mcp-snowluma-safe.js`，发送前强制校验白名单）
+>
+> 上游 v0.8.9 的能力（向量记忆全链路、会话滚动、唤醒过滤、出站队列、跟随 DSH 默认模型等）**全部保留**。
+> 逐文件对照（本地新增 / 本地改过的上游文件）与合并方式见 **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**。
 
 > 一句话：**它不是"把大模型接进 QQ"的机器人框架，而是给模型一个身份、一套会遗忘的记忆、
 > 一份作息、两只手（QQ / B站）和一个能坐在你桌面上的分身。**
 
 | | |
 | --- | --- |
-| 版本 | `0.8.9` |
+| 版本 | `0.8.9-pro`（基线上游 `0.8.9`） |
 | 目标 DSH | `0.2.1-rc.2 或更新（rc.3 已能安装，功能未完整回归）`（`npm run verify:adaptation` 可逐项复核） |
 | 平台 | Windows（沙箱 ACL / SnowLuma / 启动脚本都与它绑定） |
 | 许可 | MIT（SnowLuma 是第三方专有运行时，**不随本仓库分发**） |
-| 出处 | **本仓库是 [Mieksido/surfcore](https://github.com/Mieksido/surfcore) 的 fork**，基线上游 **v0.8.9**（`0ce8580`）；上游作者 `Mieksido`，本 fork 维护者 `angaotian` |
 | 配套仓库 | [surfvoicelocal](https://github.com/Mieksido/surfvoicelocal) · [surfvoicecloud](https://github.com/Mieksido/surfvoicecloud) · [surfpet](https://github.com/Mieksido/surfpet) |
-
-> 🧭 **先说清楚出处**：这个仓库不是上游原版。它在上游 v0.8.9 之上保留了一套本地追加功能
-> （关系系统 favor、思维链读法 think、主动开口闸门 outreach、表情包管理器 meme-pack、
-> 联网检索第一跳 Anysearch、独立控制台、安全版 QQ MCP server）。
-> 上游原版没有这些；想用纯上游请去 [Mieksido/surfcore](https://github.com/Mieksido/surfcore)。
-> 逐文件对照与合并方式见 **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**。
-> 上游 v0.8.9 的能力（向量记忆全链路、会话滚动、唤醒过滤、出站队列、跟随 DSH 默认模型等）本仓库全部保留。
 
 > 🔒 **本仓库不含任何真实数据**：角色卡是脱敏示例（`roles/`），记忆卡是空壳（`examples/`），
 > 群号 / 群友名单 / QQ 号 / B站 mid 全部为占位符。运行时数据永远只在你自己的机器上。
@@ -30,10 +47,10 @@
 
 把这句话发给 DSH：
 
-> 帮我安装 https://github.com/Mieksido/surfcore ，按 README 的步骤来。
+> 帮我安装 https://github.com/angaotian/surfcore-pro ，按 README 的步骤来。
 
-> 想装**本 fork（带本地定制）**就把上面的地址换成 `https://github.com/angaotian/surfcore`，
-> 安装步骤完全一样（本仓库在上游之上只做追加，没有改安装流程）。
+> 想装**纯上游原版**就换成 `https://github.com/Mieksido/surfcore`；安装步骤完全一样
+> （本仓库只在上游之上做追加，没有改安装流程）。
 
 **顺序很重要**（DSH 常常先 install_bundle、后装依赖，结果激活时报 `Cannot find module '@deepseek-ai/schemastery'`）：
 

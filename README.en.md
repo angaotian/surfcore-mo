@@ -1,11 +1,31 @@
-# SurfCore — QQ ↔ DeepSeek Harness Bridge + QQ × Bilibili plugin
+# SurfCore Pro — QQ ↔ DeepSeek Harness Bridge + QQ × Bilibili plugin (local fork of surfcore)
 
-> 🧭 **Provenance**: this repository is a **fork of [Mieksido/surfcore](https://github.com/Mieksido/surfcore)**,
-> based on upstream **v0.8.9** (`0ce8580`). Upstream author: `Mieksido`; maintainer of this fork: `angaotian`.
-> It keeps a set of **local-only additions that upstream does not have** (relationship system `favor`,
-> chain-of-thought reading `think`, proactive-outreach gate, meme-pack manager, Anysearch as the first
-> search hop, a standalone console page, and a hardened QQ MCP server). Want plain upstream? Go to the
-> upstream repository. Per-file comparison: **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
+## 🧭 Provenance — read this first
+
+> **This repository (`angaotian/surfcore-pro`) is a fork of [Mieksido/surfcore](https://github.com/Mieksido/surfcore).
+> It is not upstream, and it deliberately does not share upstream's name**: upstream is **`surfcore`**,
+> this fork is **`surfcore-pro`** (display name **SurfCore Pro**).
+>
+> | | |
+> | --- | --- |
+> | Upstream | [Mieksido/surfcore](https://github.com/Mieksido/surfcore) — author `Mieksido`, MIT |
+> | Base version | upstream **v0.8.9** (upstream `main` head `0ce8580`) |
+> | This repo | [angaotian/surfcore-pro](https://github.com/angaotian/surfcore-pro) — maintainer `angaotian` |
+> | Displayed version | `0.8.9-pro` (`package.json` `version` stays `0.8.9`, because update checks compare upstream version numbers) |
+>
+> **Added here on top of upstream v0.8.9 (upstream does NOT have these):**
+>
+> - `favor` relationship system (affection + intimacy axes, stages, deterministic scoring)
+> - `think` chain-of-thought reading (points → overall judgement → open questions)
+> - proactive-outreach gate (may it speak, did anyone answer last time)
+> - `meme-pack` manager (reads AstroBot `meme_manager` directory format)
+> - **Anysearch** as the first search hop (`auto` = Anysearch → DeepSeek Search API → DeepSeek model → Bing)
+> - standalone console page (`public/console.html`, reads the nested `providerGroups` list)
+> - hardened QQ MCP server (`src/mcp-snowluma-safe.js`, whitelist-checked before sending)
+>
+> Everything upstream v0.8.9 ships (vector memory, session rollover, wake filtering, outbox,
+> following the DSH default model, …) is **kept**. Per-file comparison and how the merge was done:
+> **[docs/PRO-CUSTOM.md](docs/PRO-CUSTOM.md)**.
 
 > ℹ️ This English page is a **condensed overview**. The full, code-level documentation
 > (architecture, every module, voice / pet / Bilibili subsystems, configuration and state files,
