@@ -18,9 +18,9 @@
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
 ### 批次 2026-11-08 21:35 · 设置页补 think 入口 + 控制台令牌对齐
-<!-- release-batch: start=2026-11-08T21:00+08:00 end=2026-11-08T21:40+08:00 commits=PENDING -->
+<!-- release-batch: start=2026-11-08T21:00+08:00 end=2026-11-08T21:40+08:00 commits=9c4d865 -->
 
-**覆盖提交**：见下方交接块（本批次提交后回填）
+**覆盖提交**：`9c4d865`
 **建议**：仍是 `0.8.9` 本地定制版；这两项属于「补齐已有功能的入口 / 修潜在故障」，不需要单独发版
 **当前版本**：`package.json` `0.8.9`；`main` 在 `angaotian/surfcore`（fork），未 tag
 
@@ -39,7 +39,7 @@
 **交接块（发布会话直接抄）**：
 ```
 批次 2026-11-08 21:35 · 设置页补 think 入口 + 控制台令牌对齐
-提交：<回填>
+提交：9c4d865
 文件：plugins/surfcore/lib/client.js、src/bridge.js、plugins/surfcore/scripts/test-client-contract.mjs、
       docs/cases/2026-11-08-think-settings-and-console-token.md、docs/cases/README.md、docs/RELEASE-QUEUE.md、
       release/install-manifest.json
