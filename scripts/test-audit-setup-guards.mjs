@@ -48,8 +48,14 @@ import fs from 'node:fs';
   assert.equal(nonAscii, 0, 'start.bat 必须保持纯 ASCII（否则非 UTF-8 控制台会乱码）');
   assert.equal(batText.match(/(?<!\r)\n/g)?.length ?? 0, 0, 'start.bat 必须使用 CRLF');
   assert.ok(batText.includes('harden-state-acl.mjs'), 'start.bat 必须在启动桥接前调用 ACL 助手');
-  // 助手必须排在 node src/bridge.js 之前，否则"启动时收紧"就不成立
-  assert.ok(batText.indexOf('harden-state-acl.mjs') < batText.indexOf('node src/bridge.js'), 'ACL 助手必须先于桥接启动');
+  // 助手必须排在桥接启动之前，否则"启动时收紧"就不成立。
+  // 注意：start.bat 已改成用 %NODE_EXE% + 反斜杠路径启动（见 case 2026-11-03-dsh-desktop-node-path，
+  // PATH 上的 node 可能 < 22），所以这里不能再写死字面量 'node src/bridge.js'——那样 indexOf 返回 -1，
+  // 断言会永远失败、守卫等于失效。按「ACL 助手行 < 桥接启动行」比较。
+  const aclAt = batText.indexOf('harden-state-acl.mjs');
+  const bridgeAt = batText.search(/src\\bridge\.js/);
+  assert.ok(aclAt >= 0 && bridgeAt >= 0, 'start.bat 里应同时出现 ACL 助手与桥接启动');
+  assert.ok(aclAt < bridgeAt, 'ACL 助手必须先于桥接启动');
   console.log('state ACL hardening: helper is non-blocking, recursion-guarded, and wired into start.bat');
 }
 
