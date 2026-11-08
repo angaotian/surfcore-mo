@@ -17,6 +17,46 @@
 > **2026-11-03 04:05：v0.8.7 已发布**，覆盖本表截至该时间的全部待发布批次（0.8.6 以来全部 dev，74 commits）。
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
+### 批次 2026-11-08 18:50 · 合并上游 v0.8.9（本地自定义全保留）
+<!-- release-batch: start=2026-11-08T15:00+08:00 end=2026-11-08T18:50+08:00 commits=e792677,ab07d88,e9acbc7,5519751 -->
+
+**覆盖提交**：`5519751`（含 WIP `e792677` / merge `ab07d88` / case `e9acbc7`）
+**建议**：**已是上游 0.8.9**；本地这批是「0.8.9 + 本地功能」的合体，若要对外发，版本号由发布会话定（建议 0.9.0，因为本地新增了 favor/meme-pack/think/outreach 四个能力面）
+**当前版本**：`package.json` 已随合并变成 `0.8.9`，未 tag / 未 push
+
+**改了什么**：
+- 三方合并上游 v0.8.4→v0.8.9（352 文件，+36620/-4199），14 个冲突文件逐个取舍：本地功能优先、上游架构与措辞跟进。
+- `src/bridge.js`：`POST /api/dsh/model` 保留本地宽松版并删掉上游重复路由（83 行）；并入 `catalogChoices`/`findCatalogModel`/`price`/`imageInput`；响应同时发扁平 `providers`（上游插件卡片用）与嵌套 `providerGroups`（本地独立控制台用）。
+- `src/web-search.js`：auto 变四跳 `Anysearch → DeepSeek Search API → DeepSeek 模型轮次 → Bing`，保留本地缓存键与空结果续跳。
+- `src/character-persona.js` 取上游（补 tone/full 层分支）；`dsh/agent-presets/qq-chat-v2/agent.cordis.yml` 保留本地 17【唱歌】18【提问分类】，第 16 条【发语音】换成上游措辞；`plugins/surfcore/presets/qq-chat-v2.patch.yml` 由 `scripts/build-agent-preset-patches.mjs` 重新生成（**不要手工改**）。
+- 顺带修一条失效守卫：`scripts/test-audit-setup-guards.mjs` 原来写死 `'node src/bridge.js'`，而 `start.bat` 已改成 `"%NODE_EXE%" src\bridge.js`（见 case 2026-11-03-dsh-desktop-node-path），indexOf 恒为 -1 → 守卫永远失败；改成按「ACL 助手行 < 桥接启动行」比较。
+- 上游 0.8.9 的新能力一并进来：向量记忆全链路（`src/vector-memory.js`、`src/embedding-packs.js`、本地/云端 embedding）、会话滚动（`src/session-rollover.js`，默认关）、SnowLuma 隐藏启动、更新进度与 ABA 防护、记忆页拆叙事/向量 Tab。
+
+**没做**：
+- 没跑真实 QQ 在线联调（落地时桥接没在运行）；没验证向量记忆的云端 embedding 真调用（要密钥和配额）。
+- `release/install-manifest.json` 仍是上游 0.8.9 的清单，和本地 HEAD 不符 → `test-release-manifest.mjs` 是**预期红**，发版时必须先跑 `node scripts/release-manifest.mjs` 重出清单。
+
+**验证**：
+```text
+node scripts/test-audit.mjs                                  # 151/153（仅 test-release-manifest + test-update-apply-result 红）
+node scripts/test-favor.mjs && node scripts/test-think.mjs && node scripts/test-outreach-gate.mjs
+node scripts/test-meme-pack.mjs && node scripts/test-meme-pack-import.mjs
+node scripts/test-media-search.mjs && node scripts/test-audit-bridge.mjs
+node scripts/test-agent-preset-patches.mjs && node scripts/test-voice-prompt-fix.mjs
+node plugins/surfcore/scripts/test-favor-api.mjs && node plugins/surfcore/scripts/test-model-api.mjs
+```
+
+**重启**：必须重启 QQ 桥接（`start-all.ps1` / `启动小鲸鱼.bat`）+ 重启 DSH 让插件重新加载；控制台改动刷新页面即可。
+
+**风险**：
+- 两套模型 UI 依赖不同字段（`providers` vs `providerGroups`），以后上游再改 `/api/dsh/model` 契约时两处都要看；
+- 向量记忆是 0.8.9 的新链路，默认行为与 0.8.4 不同（会话滚动默认关，但向量召回会影响记忆注入）；
+- 本地 pyc/视频素材（`video/`）也随上游进来了，仓库体积变大。
+
+**case**：`docs/cases/2026-11-08-merge-upstream-0.8.9.md`
+
+---
+
 ### 批次 2026-11-03 08:30 · 人格语气层去重
 <!-- release-batch: start=2026-11-03T08:20+08:00 end=2026-11-03T08:30+08:00 commits=2a473a3 -->
 
