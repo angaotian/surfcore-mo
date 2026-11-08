@@ -55,11 +55,16 @@
   - 基线就失败：`test-audit-setup`、`test-audit-setup-guards`、`test-qq-model-view`、`test-bili-state-paths`、`test-release-manifest`、`test-update-apply-result`、`test-update-version-fallback`
   - 沙箱限制（`spawnSync` EPERM，禁止子进程管道）：`test-bili-prefix-config`、`test-release-manifest-verify`
   - 合并后反超通过的：`test-stickers`、`test-agent-preset-patches`、`test-voice-pack-import`
+- **真实仓库收尾后 `node scripts/test-audit.mjs` = 153/153 全绿**（连跑 3 次稳定）。两个红点都不是合并引入的：
+  - `test-release-manifest`：上游 0.8.9 的 `release/install-manifest.json` 只对应上游树，合并后所有 blob 变了。`node scripts/release-manifest.mjs` 重出（775 文件 / version 0.8.9）并**先提交**再 `--verify-ref HEAD`（该模式读的是 HEAD 里的清单）→ `问题 0 个`、`✅ 清单与该 ref 的内容逐字节一致`。不重出的话真实更新必在 verify 阶段报 `verify.version-mismatch`。
+  - `test-audit-setup-guards`：见上文失效守卫，`start.bat` 早就是 `"%NODE_EXE%" src\bridge.js`，断言还写死 `'node src/bridge.js'`。
+  - `test-update-apply-result`：**robocopy 语义导致的测试抖动**，不是产品缺陷。`scripts/apply-update.mjs` 的 `copyZip` 用 `robocopy /E`（无 `/IS`、`/IT`），robocopy 默认跳过「大小相同且时间戳不新于目标」的文件；测试里 `makeTarget` 与 staging 的 `package.json` 在同一毫秒写出，`0.7.0` 与 `9.9.9` 又恰好等长 → 一个字节都不复制 → 助手读到 `v0.7.0` 判 `verify.version-mismatch`（退出码 4），随后 `updates-applied` 目录不存在 → 报 ENOENT。修法是在测试的 `runHelper` 里把 staging 文件 mtime 显式推到 `Date.now()+2000`（真实更新中 staging 是刚解压的 zip，时间戳必然比安装目录旧文件新），产品代码不动。取证方式：给 `copyZip` 临时插探针把 argv/robocopy status/目标 `package.json` 写到文件（测试用 `stdio:'ignore'`，`console.error` 看不到）。
 - 插件侧 `plugins/surfcore/scripts/test-*.mjs`：28 通过 / 10 失败，10 个失败与合并前基线**完全相同**（pet/updates 类）
-- 没验证到的部分：真实 QQ 在线联调（桥接未启动）、向量记忆云端 embedding 真调用（需密钥与配额）、`test-audit` 里 9 个环境相关的失败未在干净机器复测
+- 没验证到的部分：真实 QQ 在线联调（桥接未启动）、向量记忆云端 embedding 真调用（需密钥与配额）
 
 ## 遗留 / 后续
 
 - 需要补的测试：`test-media-search` 的四跳断言已更新为 `order.push('deepseek-api', 'deepseek', 'bing')`；`test-audit-bridge` 改读 `providerGroups` —— 建议补一条「`providers` 必须是扁平字符串数组」的正向断言，防止上游再改回去
 - 需要改的文档：`docs/guides/MODULE-BRIDGE.md` 已并集更新；向量记忆相关文档是上游新增（`docs/guides/VECTOR_MEMORY.md`、`docs/guides/EMBEDDING_PACKS.md`），本地的 `docs/guides/RELATIONSHIP.md` 未受影响
-- 待办：真机启动桥接后跑一次 `npm run test:regressions`，并确认控制台模型面板、好感度页、表情包页三处 UI 正常
+- 待办：没 push（`main` 领先 `origin/main` 7 个提交）、没打 tag；真机启动桥接后跑一次 `npm run test:regressions`，并确认控制台模型面板、好感度页、表情包页三处 UI 正常
+- 可选加固：`copyZip` 若要根除「同长度同时间戳被跳过」的理论风险，可加 `/IS`（连相同文件也复制），代价是每次更新多写一遍全部文件；当前判断不需要，保持 `/E` 只覆盖不改删

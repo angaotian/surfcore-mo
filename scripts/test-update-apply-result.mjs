@@ -469,6 +469,12 @@ try {
       fs.mkdirSync(path.join(staging, 'release'), { recursive: true });
       fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify({ name: 'surfcore', version: stagedVersion }));
       fs.writeFileSync(path.join(staging, 'release', 'install-manifest.json'), JSON.stringify({ version: stagedVersion, files: {} }));
+      // robocopy 默认会跳过「大小相同且时间戳不新于目标」的文件（走的是 /XO 那套语义）。
+      // 测试里 target 与 staging 的 package.json 是同一毫秒写出来的，'0.7.0' 和 '9.9.9' 又一样长，
+      // 于是整包一个字节都不复制，助手报 verify.version-mismatch（退出码 4）——这是测试抖动，不是产品缺陷：
+      // 真实更新时 staging 是刚解压的 zip，时间戳必然晚于安装目录里的旧文件。这里显式对齐这个前提。
+      const staged = new Date(Date.now() + 2000);
+      for (const f of ['package.json', path.join('release', 'install-manifest.json')]) fs.utimesSync(path.join(staging, f), staged, staged);
       const stateDir = path.join(base, `${name}-state`);
       fs.mkdirSync(stateDir, { recursive: true });
       const pendingFile = path.join(stateDir, 'updates-pending.json');

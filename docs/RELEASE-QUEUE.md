@@ -18,9 +18,9 @@
 > 以下批次保留作追溯；后续新批次继续加在最上面。
 
 ### 批次 2026-11-08 18:50 · 合并上游 v0.8.9（本地自定义全保留）
-<!-- release-batch: start=2026-11-08T15:00+08:00 end=2026-11-08T18:50+08:00 commits=e792677,ab07d88,e9acbc7,5519751 -->
+<!-- release-batch: start=2026-11-08T15:00+08:00 end=2026-11-08T19:10+08:00 commits=e792677,ab07d88,e9acbc7,5519751,4170a3f -->
 
-**覆盖提交**：`5519751`（含 WIP `e792677` / merge `ab07d88` / case `e9acbc7`）
+**覆盖提交**：`5519751`（含 WIP `e792677` / merge `ab07d88` / case `e9acbc7`）；其后 `4170a3f` 重出安装清单 + 本批末尾修 `test-update-apply-result.mjs` 抖动
 **建议**：**已是上游 0.8.9**；本地这批是「0.8.9 + 本地功能」的合体，若要对外发，版本号由发布会话定（建议 0.9.0，因为本地新增了 favor/meme-pack/think/outreach 四个能力面）
 **当前版本**：`package.json` 已随合并变成 `0.8.9`，未 tag / 未 push
 
@@ -30,15 +30,18 @@
 - `src/web-search.js`：auto 变四跳 `Anysearch → DeepSeek Search API → DeepSeek 模型轮次 → Bing`，保留本地缓存键与空结果续跳。
 - `src/character-persona.js` 取上游（补 tone/full 层分支）；`dsh/agent-presets/qq-chat-v2/agent.cordis.yml` 保留本地 17【唱歌】18【提问分类】，第 16 条【发语音】换成上游措辞；`plugins/surfcore/presets/qq-chat-v2.patch.yml` 由 `scripts/build-agent-preset-patches.mjs` 重新生成（**不要手工改**）。
 - 顺带修一条失效守卫：`scripts/test-audit-setup-guards.mjs` 原来写死 `'node src/bridge.js'`，而 `start.bat` 已改成 `"%NODE_EXE%" src\bridge.js`（见 case 2026-11-03-dsh-desktop-node-path），indexOf 恒为 -1 → 守卫永远失败；改成按「ACL 助手行 < 桥接启动行」比较。
+- 重出 `release/install-manifest.json`（`node scripts/release-manifest.mjs`，775 文件 / version 0.8.9）：上游那份只对应上游树，合并后 blob 全变，发版硬门禁 `--verify-ref HEAD` 必然不符；不重出的话真实更新的 verify 阶段会 100% 报 `verify.version-mismatch`。
+- 修 `scripts/test-update-apply-result.mjs` 的抖动：robocopy 默认跳过「大小相同且时间戳不新于目标」的文件，测试里 target 与 staging 的 `package.json` 同一毫秒写出、`0.7.0`/`9.9.9` 又一样长 → 整包一字节没复制，助手退 4 报版本不符。测试里把 staging 文件的 mtime 显式推到 +2s（对齐「staging 是刚解压的 zip，必然比安装目录新」这个真实前提），产品代码不动。
 - 上游 0.8.9 的新能力一并进来：向量记忆全链路（`src/vector-memory.js`、`src/embedding-packs.js`、本地/云端 embedding）、会话滚动（`src/session-rollover.js`，默认关）、SnowLuma 隐藏启动、更新进度与 ABA 防护、记忆页拆叙事/向量 Tab。
 
 **没做**：
 - 没跑真实 QQ 在线联调（落地时桥接没在运行）；没验证向量记忆的云端 embedding 真调用（要密钥和配额）。
-- `release/install-manifest.json` 仍是上游 0.8.9 的清单，和本地 HEAD 不符 → `test-release-manifest.mjs` 是**预期红**，发版时必须先跑 `node scripts/release-manifest.mjs` 重出清单。
+- 没 push（本地 `main` 领先 origin/main 7 个提交），没打 tag。
 
 **验证**：
 ```text
-node scripts/test-audit.mjs                                  # 151/153（仅 test-release-manifest + test-update-apply-result 红）
+node scripts/test-audit.mjs                                  # 153/153 全绿（连跑 3 次稳定）
+node scripts/release-manifest.mjs --verify-ref HEAD          # 清单与该 ref 逐字节一致（0 问题）
 node scripts/test-favor.mjs && node scripts/test-think.mjs && node scripts/test-outreach-gate.mjs
 node scripts/test-meme-pack.mjs && node scripts/test-meme-pack-import.mjs
 node scripts/test-media-search.mjs && node scripts/test-audit-bridge.mjs
