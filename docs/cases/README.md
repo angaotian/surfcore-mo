@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-11-08 | [强制「支持图片输入」后仍提示「按文字兜底」](2026-11-08-vision-override-consistency.md) | 提示与卡片只读模型目录值，不看 vision.imageInput 强制档位；改成按档位分支并回生效值 | 0.8.9 |
 | 2026-11-08 | [设置页补齐「思考与读法」入口 + 控制台令牌两份不一致](2026-11-08-think-settings-and-console-token.md) | think 一直是「运行时读得到、UI 看不到」；顺带把 state/console-token 对齐成 config 里生效的那份 | 0.8.9 |
 | 2026-11-08 | [合并上游 v0.8.9（保留本地自定义）](2026-11-08-merge-upstream-0.8.9.md) | 三方合并 14 个冲突；模型路由去重并双发 providers/providerGroups；auto 四跳；预设 yml 由脚本重出 | 0.8.9 |
 | 2026-11-06 | [多模型重建索引（本地/云端多选）](2026-11-06-multi-model-index-picker.md) | 弹窗多选；已有索引标注；本地走 runtime、云端直连；不改 active provider | 待发布 |

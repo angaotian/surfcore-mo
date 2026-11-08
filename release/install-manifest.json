@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "version": "0.8.9",
   "source": "git:HEAD",
-  "generatedAt": "2026-11-08T13:50:49.051Z",
+  "generatedAt": "2026-11-08T14:14:03.572Z",
   "files": {
     ".gitignore": "7999eeae654e6f1e9fd6565ea48496ffd32b2f5fbf657ac8e03f5c659e8584cd",
     ".npmrc": "a093bb2fed59d699b7f9a62a5203cc196054c624e9c39c6d908c9e7db5dd2464",
@@ -175,7 +175,7 @@
     "docs/cases/2026-11-08-merge-upstream-0.8.9.md": "966db87d4866683f8b117c78cef3135bd961fe6dd03b8370dc43c5683c6d8ab1",
     "docs/cases/2026-11-08-think-settings-and-console-token.md": "279ba1a3b1f82817bd31de5315d06b4da7fb11c9713589f942c71a1d4dd71dc3",
     "docs/cases/2026-11-08-vision-override-consistency.md": "c9c71e48ae42e24bb68a91208b00a135efb24579b8d6343d9d3718b3f543f4a7",
-    "docs/cases/README.md": "58f2ae9a4eb28a6f283529c365d11b23535540bc99f978afe7a293f659ba1d1b",
+    "docs/cases/README.md": "63ee895cee42031a95cfcf52e6142d9a7fcbdfd15a055e466c858b04797931ca",
     "docs/cases/_TEMPLATE.md": "f8b4d5fd6f08f8ccd7150bf8594f7b85d354878e8d66f7890d8c27cd4a172fcb",
     "docs/guides/12-LESSONS-ARCHITECTURE.md": "4b80e480cc0f0df0ed7d0400a238fb2e2f49349afd98a20296198b3ac5146662",
     "docs/guides/AGENT-INSTALL-PROMPT.md": "43dcd5fdbc2165926f8baba6ce2108b6d31014f9677c78090249ab0c1e642a11",
