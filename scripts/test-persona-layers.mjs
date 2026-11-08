@@ -71,6 +71,18 @@ assert.ok(fullCompose.text.includes('核心XYZ') && fullCompose.text.includes('�
 const fallbackCompose = composePersonaLayers({ core: '旧角色核心', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
 assert.ok(fallbackCompose.text.includes('旧角色核心'), '旧角色没有语气时回退核心，避免没卡');
 
+// tone 与 core 内容相同时，full 模式不能重复拼两段（旧角色/误复制）。
+const duplicateTone = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'full', mode: 'v2', maxChars: 6000 });
+assert.equal((duplicateTone.text.match(/同一段正文/g) || []).length, 1, 'identical tone/core 只能出现一次');
+assert.ok(!duplicateTone.text.includes('人格语气'), 'identical tone 不应生成语气段');
+const duplicateToneMode = composePersonaLayers({ core: '同一段正文', tone: '同一段正文', personaMode: 'tone', mode: 'v2', maxChars: 6000 });
+assert.equal((duplicateToneMode.text.match(/同一段正文/g) || []).length, 1, 'tone 模式 identical 也只能出现一次');
+assert.ok(duplicateToneMode.text.includes('同一段正文'), 'tone 模式仍要保留正文');
+
+// 目的/主动搭话路径也必须带 tone，不能只读 core。
+const bridgeSource = fs.readFileSync('src/bridge.js', 'utf8');
+assert.match(bridgeSource, /function purposePersonaText\(\)[\s\S]*?readPersonaLayerText\('tone'\)/, 'purposePersonaText 没接语气层');
+
 // 回归（2026-10-31）：没拆分的旧角色 + 身份底座 → tone 模式也必须带上核心人设。
 const unsplitCompose = composePersonaLayers({
   core: '旧角色核心正文', identity: '你是小咪；你的主人是雨雨。', personaMode: 'tone', mode: 'v2', maxChars: 6000,
@@ -112,8 +124,8 @@ for (const [name, src] of [['bridge', bridge], ['scheduler', scheduler], ['pet',
 assert.ok(scheduler.includes('identity: buildPersonaIdentity('), 'B站 提示词必须带身份底座');
 assert.ok(pet.includes('identity: buildPersonaIdentity('), '桌宠 提示词必须带身份底座');
 // 语气层也要跟着走：不能只有 QQ 用语气，B站/桌宠还是干巴巴的人设。
-assert.ok(scheduler.includes("tone: readPersonaLayerText('tone')"), 'B站 提示词必须带语气层');
-assert.ok(pet.includes("tone: readPersonaLayerText('tone')"), '桌宠 提示词必须带语气层');
+assert.ok(scheduler.includes("personaMode: split ? 'tone' : 'full'") && scheduler.includes("readPersonaLayerText('tone')"), 'B站 提示词必须按人格通道决定是否带语气层');
+assert.ok(pet.includes("personaMode: split ? 'tone' : 'full'") && pet.includes("readPersonaLayerText('tone')"), '桌宠 提示词必须按人格通道决定是否带语气层');
 
 // 回归（2026-10-31）：保存全部不能把语气层写进人格核心。
 {
@@ -123,6 +135,20 @@ assert.ok(pet.includes("tone: readPersonaLayerText('tone')"), '桌宠 提示词�
   assert.ok(index.includes('tone: { path: paths.tone'), 'GET /persona 必须返回 tone 文本');
   const client = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
   assert.ok(client.includes('origTone'), '客户端保存前要知道原层有没有内容，不能盲写空层');
+}
+
+// 整卡 / 拆分双通道（2026-11-06）。
+{
+  const cp = fs.readFileSync(path.resolve('src/character-persona.js'), 'utf8');
+  const index = fs.readFileSync(path.resolve('plugins/surfcore/lib/index.js'), 'utf8');
+  const bridge = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
+  const store = fs.readFileSync(path.resolve('plugins/surfcore/lib/store.js'), 'utf8');
+  const client2 = fs.readFileSync(path.resolve('plugins/surfcore/lib/client.js'), 'utf8');
+  assert.ok(cp.includes('persona.full.md') && cp.includes("kind === 'full'"), '人格系统必须支持整卡文件与 full 层读取');
+  assert.ok(index.includes("layer === 'full'") && index.includes('full: { path: paths.full'), 'API 必须支持保存/读取整卡层');
+  assert.ok(bridge.includes('personaInjectionMode()') && bridge.includes("mode === 'split'"), '桥接必须按 persona.mode 选择整卡/拆分注入');
+  assert.ok(store.includes("mode: 'full'"), 'persona.mode 默认必须是 full');
+  assert.ok(client2.includes('人格注入方式') && client2.includes('整个人格卡注入') && client2.includes('拆分人格卡（省 token）'), '角色页必须有整卡/拆分两个 Tab 和通道选择');
 }
 
 console.log('✅ 人格卡分层通过');

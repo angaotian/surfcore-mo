@@ -458,6 +458,14 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
             providers: state.dshProviders,
             catalogAvailable: true,
             globalSideEffect: true,
+            followDefault: true,
+            modelSource: 'dsh-default',
+            effectiveReasoningEffort: state.dshEffort,
+            configProvider: 'deepseek-official',
+            configModel: 'deepseek-flash',
+            configReasoningEffort: state.dshEffort,
+            defaultModel: { provider: 'deepseek-official', model: 'deepseek-flash' },
+            defaultModelError: '',
           });
           case '/api/whitelist': return json(state.whitelist);
           case '/api/sessions': return json({ sessions: state.sessions });

@@ -144,6 +144,8 @@ export function mapStatusPayload(data = {}, { port = consolePort(), pid } = {}) 
     mode: payload.mode ?? payload.currentMode ?? null,
     dsh: payload.dsh ?? null,
     snowluma: payload.snowluma ?? null,
+    // 今日唤醒额度：设置页用它判断「今天还能不能叫醒它」。
+    wakeGuard: payload.wakeGuard ?? null,
     sessions: payload.sessions ?? null,
     // 对话收尾：设置页卡片读它（最近一次收在哪 / 下次怎么接 / 当前判断）。
     closure: payload.closure ?? null,
@@ -187,12 +189,12 @@ export async function start({ dshWebUrl = '' } = {}) {
   });
   child.unref();
   appendSupervisorLog(`已请求启动 bridge.js（无窗口，pid ${child.pid ?? '?'}，DSH=${env.DSH_WEB_URL ?? 'config'}）`);
-  // 等最多 12 秒
-  for (let i = 0; i < 24; i += 1) {
+  // 等最多 30 秒（首次启动可能要先做 ACL/状态初始化；12 秒会误报失败）
+  for (let i = 0; i < 60; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     if (await portOpen()) return { ok: true, started: true, message: '桥接已启动' };
   }
-  return { ok: false, error: '启动后 12 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
+  return { ok: false, error: '启动后 30 秒仍未监听控制台端口，请查看桥接日志', log: BRIDGE_SUPERVISOR_LOG };
 }
 
 export async function stop() {

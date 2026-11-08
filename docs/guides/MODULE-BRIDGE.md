@@ -589,11 +589,14 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 
 | 方法 | 路径 | 令牌 | 副作用 |
 |---|---|---|---|
-| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单；额外返回 `providers` 供切换用） | `src/bridge.js:5398-5449` |
-| POST | `/api/dsh/effort` | C | 写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:5451-5472` |
-| POST | `/api/dsh/model` | C | 写 `config.json` 的 `dsh.provider/model/reasoningEffort` + 热更新 + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js:5474-5533` |
+| GET | `/api/dsh/model` | C | 只读（读 `session.modelCatalog`，3 秒超时，失败降级内置清单；返回 `models[]` / `providers[]`，带 reasoning/图片/价格提示） | `src/bridge.js` DSH 模型段 |
+| POST | `/api/dsh/model` | C | 校验目录中的 provider/model/effort，写 `config.json` + `modelSelectionEpoch++`（下一条消息重新 selectModel） | `src/bridge.js` DSH 模型段 |
+| POST | `/api/dsh/effort` | C | 只改思考强度，写 `config.json` + `modelSelectionEpoch++`（兼容旧控制台） | `src/bridge.js` DSH 模型段 |
 
-`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`src/bridge.js:5447`）。
+目录不可用时 GET 的 `models`/`providers` 为空；前端只允许调 `/api/dsh/effort`，不瞎给模型选项。
+POST 的 `MODEL_CATALOG_UNAVAILABLE` / `MODEL_NOT_FOUND` / `MODEL_EFFORT_UNSUPPORTED` 都带 `hint`。
+
+`globalSideEffect: true` 是明确告知：`selectModel` 会同时改 DSH 全局默认模型（`~/.dsh/settings.yaml` 的 `agent-default-model`），不只影响 QQ 会话。
 
 切换模型（`POST /api/dsh/model`）比思考强度多两件事：
 
@@ -601,6 +604,8 @@ await pumpMux();      // DSH 事件流主循环（永不返回）
 - **档位跟随**：新模型不支持当前思考档位时自动落到它公布的默认档（回包 `effortAdjusted: true`），否则换完模型每回合都会 `UNSUPPORTED_REASONING_EFFORT`。
 
 两者都不用重启桥接：`cfg.dsh` 是启动时读进来的内存副本，接口会一并更新它并 `modelSelectionEpoch++`，已有会话在**下一条消息**重新绑定。只有手改 `config.json` 才要重启（`cfg` 只在启动时读一次）。
+
+（行号：0.8.9 实测 GET `/api/dsh/model` → `src/bridge.js:5746`、POST `/api/dsh/model` → `:5847` 与另一处 `:5985`、POST `/api/dsh/effort` → `:5929`；本地 0.8.4 时依次是 `:5398-5449`、`:5474-5533`、`:5451-5472`。升级后行号会漂，定位以路径字符串为准。）
 
 ### 6.7 安全 / 令牌 / 问候 / 目的 / 测试
 

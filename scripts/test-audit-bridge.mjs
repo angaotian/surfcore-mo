@@ -380,6 +380,12 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     // 同一批管理端点，管理员（仅控制台令牌）应可正常访问
     const adminOk = await call('/api/dsh/model', 'GET', adminOnly);
     assert.equal(adminOk.status, 200, '管理员应能访问 /api/dsh/model');
+    const adminJson = JSON.parse(adminOk.body || '{}');
+    assert.ok(Array.isArray(adminJson.models), '模型目录接口必须返回 models 数组（目录不可用也要是空数组）');
+    assert.ok(Array.isArray(adminJson.providers), '模型目录接口必须返回 providers 数组');
+    const badModel = await call('/api/dsh/model', 'POST', adminOnly, {});
+    assert.equal(badModel.status, 400, '缺少 provider/model 必须 400，不能静默保存');
+    assert.equal(JSON.parse(badModel.body || '{}').code, 'MODEL_REQUIRED');
     console.log('PASS agent token cannot reach persona/prompt/effort/whitelist admin endpoints');
   } catch (error) { failures++; console.error('FAIL agent token admin isolation:', error.message); }
   finally { await new Promise((resolve) => server.close(resolve)); await h.close(); }
@@ -481,10 +487,12 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     const admin = { 'x-console-token': 'fixture-console-token' };
     const post = (body) => call('/api/dsh/model', 'POST', admin, body);
 
-    // ① 目录随 GET 下发：控制台那两个下拉就靠它，档位要原样保留（含白名单外的 medium）。
+    // ① 目录随 GET 下发：控制台那两个下拉靠嵌套的 providerGroups（0.8.9 起 providers 是扁平 id 数组，
+    // 给插件卡片用），档位要原样保留（含白名单外的 medium）。
     const view = JSON.parse((await call('/api/dsh/model', 'GET', admin)).body);
-    assert.deepEqual(view.providers.map((p) => p.id), ['deepseek-official', 'fox-api-deepseek']);
-    assert.deepEqual(view.providers[1].models[0].efforts, ['low', 'medium']);
+    assert.deepEqual(view.providers, ['deepseek-official', 'fox-api-deepseek'], 'providers 是扁平 id 数组');
+    assert.deepEqual(view.providerGroups.map((p) => p.id), ['deepseek-official', 'fox-api-deepseek']);
+    assert.deepEqual(view.providerGroups[1].models[0].efforts, ['low', 'medium']);
     assert.equal(view.catalogAvailable, true);
 
     // ② 非法输入一律 400：空值、换行（会把配置写成一行注记）、目录里没有的提供方 / 模型。

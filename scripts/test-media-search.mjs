@@ -160,6 +160,9 @@ await test('emojiCdnCandidates 只接受十六进制 id（防任意 URL 拼接�
     const valid = h.emojiCdnCandidates('f96bf2d2d93c3530d5eb148f55206fb1');
     assert.equal(valid.length, 1);
     assert.equal(valid[0], 'https://gxh.vip.qq.com/club/item/parcel/item/f9/f96bf2d2d93c3530d5eb148f55206fb1/raw300.gif');
+    const withUin = h.emojiCdnCandidates({ emojiId: 'f96bf2d2d93c3530d5eb148f55206fb1', uin: '10001' });
+    assert.ok(withUin[0]?.startsWith('https://p.qpic.cn/qq_expression/10001/'), '有 uin 时必须先试 p.qpic');
+    assert.ok(withUin.some((u) => u.includes('gxh.vip.qq.com')), 'gxh 仍保留为最后一跳');
     for (const bad of ['', 'abc', '../../etc/passwd', 'f96bf2d2d93c3530d5eb148f55206fb1/../../x', '中文', null]) {
       assert.equal(h.emojiCdnCandidates(bad).length, 0, `非法 emoji_id 不得拼 URL：${bad}`);
     }
@@ -510,10 +513,11 @@ await test('Anysearch：非 https 端点直接拒绝（不联网、不泄查询�
 
 await test('webSearch：auto 第一跳是 Anysearch，显式 pin 不回退', async () => {
   const source = fs.readFileSync(path.join(ROOT, 'src', 'web-search.js'), 'utf8');
-  // 顺序：order.push('anysearch') 必须出现在 deepseek/bing 之前 —— 改顺序会静默改变「谁在实时检索」。
+  // 顺序：order.push('anysearch') 必须出现在其余三跳之前 —— 改顺序会静默改变「谁在实时检索」。
+  // 0.8.9 起 auto 是四跳：Anysearch → DeepSeek Search API → DeepSeek 模型轮次 → Bing。
   const anyAt = source.indexOf("order.push('anysearch')");
-  const restAt = source.indexOf("order.push('deepseek', 'bing')");
-  assert.ok(anyAt > 0 && restAt > 0, 'auto 链路必须显式列出三家的顺序');
+  const restAt = source.indexOf("order.push('deepseek-api', 'deepseek', 'bing')");
+  assert.ok(anyAt > 0 && restAt > 0, 'auto 链路必须显式列出四家的顺序');
   assert.ok(anyAt < restAt, 'Anysearch 必须是第一跳');
   assert.match(source, /anysearch\?\.enabled !== false/, '关掉 Anysearch 时要能从 auto 链路里摘掉这一跳');
   assert.match(source, /Object\.hasOwn\(attempts, wanted\)/, '显式 provider 必须只走那一家（旧行为：不回退）');

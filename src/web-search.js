@@ -43,6 +43,8 @@ const DEFAULT_BASE_URL = 'https://api.deepseek.com/anthropic/v1';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
 const DEFAULT_API_VERSION = '2023-06-01';
 const DEFAULT_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+const DEFAULT_ACCOUNT_CREDENTIAL = 'deepseek-account-platform/default';
+const DEFAULT_API_SEARCH_URL = 'https://api.deepseek.com/v1/tools';
 const DEFAULT_TIMEOUT_MS = 35000;
 const DEFAULT_ANYSEARCH_ENDPOINT = 'https://api.anysearch.com/mcp';
 const DEFAULT_ANYSEARCH_TIMEOUT_MS = 20000;
@@ -64,6 +66,7 @@ const defaultConfig = Object.freeze({
   apiKey: '',
   apiKeyEnv: DEFAULT_API_KEY_ENV,
   baseURL: '',
+  apiSearchURL: '',
   model: DEFAULT_MODEL,
   maxUses: 5,
   maxTokens: 4096,
@@ -129,6 +132,7 @@ export function loadSearchConfig(root) {
     apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiKeyEnv: typeof raw.apiKeyEnv === 'string' && raw.apiKeyEnv.trim() ? raw.apiKeyEnv.trim() : DEFAULT_API_KEY_ENV,
     baseURL: typeof raw.baseURL === 'string' ? raw.baseURL.trim().replace(/\/+$/, '') : '',
+    apiSearchURL: typeof raw.apiSearchURL === 'string' ? raw.apiSearchURL.trim().replace(/\/+$/, '') : '',
     model: typeof raw.model === 'string' && raw.model.trim() ? raw.model.trim() : DEFAULT_MODEL,
     maxUses: num(raw.maxUses, defaultConfig.maxUses, 1, 5),
     maxTokens: num(raw.maxTokens, defaultConfig.maxTokens, 256, 8192),
@@ -158,15 +162,19 @@ export function resolveDshHome() {
 
 /**
  * 从 DSH 的凭据文件里取 key。
- * 结构：`refs: { <名称>: <明文值> }`（实测；不是记录 id）。只看指定 ref，绝不遍历其它凭据。
+ * 旧结构：`refs: { <名称>: <明文值> }`；
+ * DSH 0.2.x：`records: { <id>: { kind, payload: { token } } }`。
+ * 只看指定名字，绝不遍历其它凭据。
  */
 export function readDshCredential(ref) {
   const name = String(ref ?? '').trim();
   if (!name) return '';
   try {
     const doc = YAML.load(fs.readFileSync(path.join(resolveDshHome(), '.credentials.yaml'), 'utf8'));
-    const value = doc?.refs?.[name];
-    return typeof value === 'string' ? value.trim() : '';
+    const legacy = doc?.refs?.[name];
+    if (typeof legacy === 'string' && legacy.trim()) return legacy.trim();
+    const token = doc?.records?.[name]?.payload?.token;
+    return typeof token === 'string' ? token.trim() : '';
   } catch {
     return '';
   }
@@ -180,7 +188,11 @@ export function resolveSearchApiKey(config) {
   const fromEnv = String(process.env[envName] ?? '').trim();
   if (fromEnv) return { key: fromEnv, source: 'env' };
   const fromDsh = readDshCredential(envName);
-  if (fromDsh) return { key: fromDsh, source: 'dsh-credentials' };
+  if (fromDsh) {
+    return { key: fromDsh, source: envName === DEFAULT_ACCOUNT_CREDENTIAL ? 'dsh-account-credential' : 'dsh-credentials' };
+  }
+  const fromAccount = readDshCredential(DEFAULT_ACCOUNT_CREDENTIAL);
+  if (fromAccount) return { key: fromAccount, source: 'dsh-account-credential' };
   return { key: '', source: 'none' };
 }
 
@@ -268,6 +280,22 @@ async function validateSearchEndpoint(baseURL) {
   if (url.username || url.password) throw new Error('webSearch.baseURL 不能包含凭据');
   const addresses = await resolveSafeAddresses(url.hostname);
   return { url, addresses };
+}
+
+/** 账号平台 token 只能发给 DeepSeek 官方域名，不能被 baseURL 配置带去别处。 */
+export function assertAccountEndpoint(baseURL) {
+  let url;
+  try {
+    url = new URL(String(baseURL ?? '').trim());
+  } catch {
+    throw Object.assign(new Error('账号凭据的搜索端点无效'), { code: 'UNSAFE_ENDPOINT' });
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'api.deepseek.com' || url.port !== '') {
+    throw Object.assign(
+      new Error('账号凭据只能发往 https://api.deepseek.com，拒绝自定义搜索端点'),
+      { code: 'UNSAFE_ENDPOINT' },
+    );
+  }
 }
 
 /**
@@ -372,13 +400,75 @@ async function postJson(url, addresses, options) {
   throw lastError ?? new Error('联网搜索请求失败');
 }
 
+/** Map /v1/tools/search results into the shared webSearch result shape. */
+export function mapApiSearchResponse(payload, maxResults = 10) {
+  const items = Array.isArray(payload?.results) ? payload.results : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const url = normalizeSearchUrl(item?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const title = String(item?.title ?? '').trim().slice(0, 200) || url;
+    const snippet = String(item?.summary ?? item?.snippet ?? '').trim().slice(0, 500);
+    out.push({ title, url, ...(snippet ? { snippet } : {}) });
+    if (out.length >= maxResults) break;
+  }
+  return out;
+}
+
+/**
+ * DeepSeek Search API 直连：一次 HTTP，不再走模型轮次。
+ * 账号平台 token 只允许发 api.deepseek.com；API key 才允许自定义 endpoint。
+ */
+export async function deepseekApiSearch(query, config = defaultConfig) {
+  const { key, source } = resolveSearchApiKey(config);
+  if (!key) {
+    throw Object.assign(new Error('没有可用的 DeepSeek 凭据'), { code: 'NO_KEY' });
+  }
+  const baseURL = config.apiSearchURL || process.env.DEEPSEEK_SEARCH_API_BASE_URL || DEFAULT_API_SEARCH_URL;
+  if (source === 'dsh-account-credential') assertAccountEndpoint(baseURL);
+  const { url, addresses } = await validateSearchEndpoint(baseURL);
+  const endpoint = new URL(`${url.toString().replace(/\/+$/, '')}/search`);
+  const body = JSON.stringify({ query, count: Math.min(50, config.maxResults || 10) });
+  const response = await postJson(endpoint, addresses, {
+    headers: {
+      ...(source === 'dsh-account-credential'
+        ? { 'x-dsh-auth-token': key }
+        : { authorization: `Bearer ${key}` }),
+      'content-type': 'application/json',
+      accept: 'application/json',
+      'user-agent': 'qq-bridge-web-search/0.2.0',
+    },
+    body,
+    timeoutMs: config.timeoutMs || DEFAULT_TIMEOUT_MS,
+  });
+  if (response.status < 200 || response.status >= 300) {
+    let detail = '';
+    try {
+      const parsed = JSON.parse(response.text);
+      const message = typeof parsed?.error === 'string' ? parsed.error : parsed?.error?.message ?? parsed?.message;
+      if (typeof message === 'string') detail = message.slice(0, 200);
+    } catch {}
+    throw new Error(`DeepSeek Search API HTTP ${response.status}${detail ? `：${detail}` : ''}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(response.text);
+  } catch {
+    throw Object.assign(new Error('DeepSeek Search API 返回了非 JSON 响应'), { code: 'BAD_JSON' });
+  }
+  return mapApiSearchResponse(parsed, config.maxResults || 10);
+}
+
 /** DeepSeek 原生联网搜索。失败时抛出带稳定 code 的错误，由调用方决定是否回退。 */
 export async function deepseekSearch(query, config = defaultConfig) {
-  const { key } = resolveSearchApiKey(config);
+  const { key, source } = resolveSearchApiKey(config);
   if (!key) {
     throw Object.assign(new Error('没有可用的 DeepSeek API key'), { code: 'NO_KEY' });
   }
   const baseURL = config.baseURL || process.env.DEEPSEEK_SEARCH_BASE_URL || DEFAULT_BASE_URL;
+  if (source === 'dsh-account-credential') assertAccountEndpoint(baseURL);
   const { url, addresses } = await validateSearchEndpoint(baseURL);
   const endpoint = new URL(`${url.toString().replace(/\/+$/, '')}/messages`);
   const body = JSON.stringify({
@@ -396,8 +486,9 @@ export async function deepseekSearch(query, config = defaultConfig) {
   });
   const response = await postJson(endpoint, addresses, {
     headers: {
-      'x-api-key': key,
-      authorization: `Bearer ${key}`,
+      ...(source === 'dsh-account-credential'
+        ? { 'x-dsh-auth-token': key }
+        : { 'x-api-key': key, authorization: `Bearer ${key}` }),
       'anthropic-version': DEFAULT_API_VERSION,
       'content-type': 'application/json',
       accept: 'application/json',
@@ -697,26 +788,29 @@ export function clearSearchCache() {
 
 /** 回退链里每家失败原因的文案（`auto` 最后把这几条拼起来，别让调用方只看到最后一家的错）。 */
 function describeSearchFailure(provider, error) {
-  if (provider === 'deepseek' && error?.code === 'NO_KEY') return '未配置 DeepSeek 搜索凭据';
+  if ((provider === 'deepseek' || provider === 'deepseek-api') && error?.code === 'NO_KEY') return '未配置 DeepSeek 搜索凭据';
   const label = provider === 'anysearch'
     ? 'Anysearch 搜索不可用'
-    : provider === 'deepseek'
-      ? 'DeepSeek 搜索不可用'
-      : 'Bing 搜索不可用';
+    : provider === 'deepseek-api'
+      ? 'DeepSeek Search API 不可用'
+      : provider === 'deepseek'
+        ? 'DeepSeek 搜索不可用'
+        : 'Bing 搜索不可用';
   return `${label}：${error?.message ?? error}`;
 }
 
 /**
  * 统一入口：按配置选择 provider。
  *
- * `auto` 顺序 = **Anysearch → DeepSeek → Bing**：
+ * `auto` 顺序 = **Anysearch → DeepSeek Search API → DeepSeek 模型轮次 → Bing**：
  * - 前一路**报错**就换下一路；前一路**返回空结果**也继续换（空结果往往只是这家没收录），
  *   但会把第一个空结果留着，全部为空时返回它 + note。
  * - `webSearch.anysearch.enabled: false` 时跳过第一路（担心数据外发就关这里）。
- * - 显式 `provider: "deepseek" | "bing" | "anysearch"` 时**不回退**：错就错，
+ * - `deepseek-api` 走直连 Search API（0.8.5+ 上游新增），需要 webSearch.apiKey；无凭据会自动跳过。
+ * - 显式 `provider: "deepseek" | "deepseek-api" | "bing" | "anysearch"` 时**不回退**：错就错，
  *   免得「以为在用 A，其实悄悄换成了 B」（旧行为，测试钉着）。
  *
- * @returns {{query:string, provider:'anysearch'|'deepseek'|'bing', results:object[], fallbackFrom?:string, note?:string}}
+ * @returns {{query:string, provider:'anysearch'|'deepseek'|'deepseek-api'|'bing', results:object[], fallbackFrom?:string, note?:string}}
  */
 export async function webSearch(query, options = {}) {
   const q = String(query ?? '').trim();
@@ -737,6 +831,7 @@ export async function webSearch(query, options = {}) {
       provider: 'anysearch',
       results: await anysearchSearch(q, scopedConfig, { maxResults, freshness, contentTypes })
     }),
+    'deepseek-api': async () => ({ query: q, provider: 'deepseek-api', results: await deepseekApiSearch(q, scopedConfig) }),
     deepseek: async () => ({ query: q, provider: 'deepseek', results: await deepseekSearch(q, scopedConfig) }),
     bing: async () => ({ query: q, provider: 'bing', results: await bingSearch(q, scopedConfig) })
   };
@@ -748,7 +843,7 @@ export async function webSearch(query, options = {}) {
   } else {
     const order = [];
     if (scopedConfig.anysearch?.enabled !== false) order.push('anysearch');
-    order.push('deepseek', 'bing');
+    order.push('deepseek-api', 'deepseek', 'bing');
     const reasons = [];
     let emptyValue = null;
     let firstFailed = '';
